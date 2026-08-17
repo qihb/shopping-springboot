@@ -1,0 +1,27 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: spring-shop
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 请按需修改：数据库名、主机、端口
+    url: jdbc:mysql://localhost:3306/spring_shop?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    # 可通过环境变量 MYSQL_PASSWORD 覆盖密码
+    password: ${MYSQL_PASSWORD:root}
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd HH:mm:ss
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.springshop.**.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
