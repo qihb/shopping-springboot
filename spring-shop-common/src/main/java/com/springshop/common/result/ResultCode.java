@@ -10,7 +10,13 @@ public enum ResultCode {
     UNAUTHORIZED(401, "未认证或登录已过期"),
     FORBIDDEN(403, "无权限访问"),
     NOT_FOUND(404, "资源不存在"),
-    SYSTEM_ERROR(500, "系统内部错误");
+    SYSTEM_ERROR(500, "系统内部错误"),
+
+    // 业务码：用户模块（1000 段）
+    USERNAME_EXISTS(1001, "用户名已存在"),
+    USER_NOT_FOUND(1002, "用户不存在"),
+    PASSWORD_ERROR(1003, "用户名或密码错误"),
+    USER_DISABLED(1004, "账号已被禁用");
 
     private final Integer code;
 

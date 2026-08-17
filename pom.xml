@@ -20,6 +20,7 @@
 
     <modules>
         <module>spring-shop-common</module>
+        <module>spring-shop-user</module>
         <module>spring-shop-web</module>
     </modules>
 
@@ -27,6 +28,8 @@
         <java.version>21</java.version>
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <springdoc.version>2.8.9</springdoc.version>
+        <swagger-annotations.version>2.2.28</swagger-annotations.version>
+        <jjwt.version>0.12.6</jjwt.version>
     </properties>
 
     <dependencyManagement>
@@ -47,9 +50,38 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>com.springshop</groupId>
+                <artifactId>spring-shop-user</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <!-- JWT 三件套：api 编译期、impl/jackson 运行期 -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+                <scope>runtime</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
+                <scope>runtime</scope>
+            </dependency>
+            <dependency>
                 <groupId>org.springdoc</groupId>
                 <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
                 <version>${springdoc.version}</version>
+            </dependency>
+            <!-- 文档注解：供各业务模块的 Controller 标注 @Tag/@Operation（轻量，不引入整个文档 starter） -->
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-annotations-jakarta</artifactId>
+                <version>${swagger-annotations.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
