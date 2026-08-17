@@ -1,4 +1,6 @@
--- 用户表（spring-shop-user 模块）
+-- Flyway 版本化迁移 V1：用户模块建表（spring-shop-user）
+-- 说明：本地开发库此前可能已手动执行过同结构脚本，故保留 IF NOT EXISTS 保证可重复执行；
+-- 后续新增表结构的变更请使用新的 V{n} 脚本，且不要带 IF NOT EXISTS。
 CREATE TABLE IF NOT EXISTS `user` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
     `username`    VARCHAR(50)  NOT NULL COMMENT '用户名（唯一）',
