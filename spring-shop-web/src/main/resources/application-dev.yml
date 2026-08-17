@@ -1,0 +1,17 @@
+# 开发环境配置（默认激活）
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/spring_shop?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    # 本地默认密码，可通过环境变量 MYSQL_PASSWORD 覆盖
+    password: ${MYSQL_PASSWORD:root}
+
+mybatis-plus:
+  configuration:
+    # 开发环境打印 SQL 日志，方便调试
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    com.springshop: debug

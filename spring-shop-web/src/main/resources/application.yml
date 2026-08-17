@@ -4,13 +4,9 @@ server:
 spring:
   application:
     name: spring-shop
-  datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    # 请按需修改：数据库名、主机、端口
-    url: jdbc:mysql://localhost:3306/spring_shop?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    # 可通过环境变量 MYSQL_PASSWORD 覆盖密码
-    password: ${MYSQL_PASSWORD:root}
+  # 默认激活 dev 环境，生产通过环境变量 SPRING_PROFILES_ACTIVE=prod 覆盖
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
@@ -20,8 +16,18 @@ mybatis-plus:
   type-aliases-package: com.springshop.**.entity
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   global-config:
     banner: false
     db-config:
       id-type: auto
+      # 逻辑删除配置：实体字段 isDeleted，1=已删除 0=未删除
+      logic-delete-field: isDeleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# 接口文档（springdoc-openapi / Swagger UI）
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

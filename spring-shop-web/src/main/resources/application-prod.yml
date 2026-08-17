@@ -1,0 +1,12 @@
+# 生产环境配置（通过 SPRING_PROFILES_ACTIVE=prod 激活）
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 生产数据库连接全部走环境变量，禁止硬编码
+    url: ${DB_URL:jdbc:mysql://localhost:3306/spring_shop?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=true}
+    username: ${DB_USERNAME:root}
+    password: ${MYSQL_PASSWORD}
+
+logging:
+  level:
+    com.springshop: info
