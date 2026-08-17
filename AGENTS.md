@@ -154,6 +154,8 @@ curl http://localhost:8080/api/health
 - 提交信息使用中文，遵循格式：`<类型>: <简述>`
   - 类型：`feat`（新功能）、`fix`（修复）、`refactor`（重构）、`docs`（文档）、`chore`（杂项）
   - 示例：`feat: 新增用户注册接口`
+  - 简述不超过 100 字符
+- **提交信息已启用自动校验**：仓库根目录 `.githooks/commit-msg` 会拦截不合规的提交。首次 clone 后需执行一次 `git config core.hooksPath .githooks` 才能生效。
 - 不提交 `target/`、IDE 配置等（已在 `.gitignore` 中排除）。
 
 ### 禁止事项
