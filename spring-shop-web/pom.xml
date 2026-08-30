@@ -42,6 +42,13 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- 热更新：devtools 监听 classpath 变化，代码改动后自动重启应用（仅开发环境使用） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-devtools</artifactId>
+            <scope>runtime</scope>
+            <optional>true</optional>
+        </dependency>
         <!-- 数据库迁移：Flyway 版本化管理，应用启动时自动执行 db/migration 下的脚本 -->
         <dependency>
             <groupId>org.flywaydb</groupId>

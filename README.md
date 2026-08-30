@@ -17,7 +17,10 @@
 | 构建 | Maven | 多模块管理 |
 | 持久层 | MyBatis-Plus 3.5.17 | 通用 CRUD、分页插件 |
 | 数据库 | MySQL 8 | |
+| 安全认证 | Spring Security + JWT | 登录鉴权、BCrypt 密码加密 |
+| 数据库迁移 | Flyway | 版本化建表脚本 |
 | 参数校验 | spring-boot-starter-validation | DTO 注解校验 |
+| API 文档 | springdoc-openapi | 接口注解（@Tag / @Operation） |
 
 ### 模块划分
 
@@ -25,8 +28,10 @@
 spring-shop
 ├── spring-shop-common   公共模块：统一响应(Result)、响应码枚举(ResultCode)、
 │                        业务异常(BusinessException)、全局异常处理(GlobalExceptionHandler)、
-│                        MyBatis-Plus 配置(分页插件)——禁止包含业务逻辑
-└── spring-shop-web      启动模块：SpringBoot 启动类、控制器、配置文件，依赖 common
+│                        MyBatis-Plus 配置(分页插件)、JWT 工具(JwtTokenProvider)、
+│                        通用分页入参(PageQuery)/分页结果(PageResult)——禁止包含业务逻辑
+├── spring-shop-user     用户模块：注册、登录（JWT 签发）、当前用户信息
+└── spring-shop-web      启动模块：SpringBoot 启动类、控制器、Spring Security 配置、配置文件
 ```
 
 ### 基础能力（已实现）
@@ -34,19 +39,25 @@ spring-shop
 - **统一响应体**：所有接口返回 `Result<T>`（code / message / data），成功、失败响应规范统一。
 - **全局异常处理**：业务异常、参数校验异常、类型转换异常、未知异常统一兜底，前端无需关心错误细节。
 - **响应码枚举**：`ResultCode` 统一管理状态码，杜绝魔法数字。
-- **MyBatis-Plus 集成**：分页插件、下划线转驼峰映射、主键自增已就绪。
+- **MyBatis-Plus 集成**：分页插件、下划线转驼峰映射、主键自增、逻辑删除、乐观锁、字段自动填充（create_time / update_time / is_deleted / version）已就绪。
+- **通用分页**：`PageQuery`（页码 + 每页条数）与 `PageResult<T>`（列表 + 总数 + 总页数），各模块分页接口复用。
+- **用户与认证**：注册（用户名唯一、BCrypt 加密）、登录（校验通过签发 JWT）、`GET /api/user/me` 获取当前登录用户。
+- **Spring Security 集成**：JWT 认证过滤器，除白名单接口外一律要求登录，当前用户 id 通过 `UserContext` 获取。
+- **数据库迁移**：Flyway 版本化脚本管理表结构（V1 用户 / V2 商品 / V3 订单与购物车）。
 - **健康检查接口**：`GET /api/health` 用于验证服务是否正常启动。
 
 ## 业务规划
 
-面向电商场景，规划中的业务模块（逐步实现）：
+面向电商场景，按依赖关系逐步实现以下业务模块：
 
-- 用户模块：注册、登录、个人中心
-- 商品模块：分类、商品列表、商品详情
-- 购物车模块：加购、修改、结算
-- 订单模块：下单、支付、订单状态流转
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| 用户模块 | 注册、登录、个人中心 | ✅ 已完成 |
+| 商品模块 | 分类、商品列表、商品详情（SPU/SKU） | ⏳ 待开发（表结构已就绪） |
+| 购物车模块 | 加购、修改数量、勾选结算 | ⏳ 待开发（表结构已就绪） |
+| 订单模块 | 收货地址、下单、订单状态流转 | ⏳ 待开发（表结构已就绪） |
 
-> 当前阶段已完成基础框架搭建，业务模块尚未开发。
+> 数据库表结构已通过 Flyway 迁移脚本完成设计（V1~V3），含逻辑删除、乐观锁、订单快照等电商通用设计。
 
 ## 项目启动
 
@@ -91,21 +102,34 @@ mvn -pl spring-shop-web -am spring-boot:run
 ### 4. 验证
 
 ```bash
-curl http://localhost:8080/api/health
+curl http://localhost:6001/api/health
 # 期望返回：
 # {"code":200,"message":"操作成功","data":"spring-shop service is running"}
 ```
 
 ## 测试账号
 
-当前项目尚未开发用户模块，**暂无业务测试账号**。业务模块开发完成后，测试账号将补充在此处，例如：
+用户模块已开发，**直接调用注册接口创建账号**，即可登录体验：
 
-| 账号 | 密码 | 角色 | 说明 |
-|------|------|------|------|
-| admin | （待补充） | 管理员 | 后台管理 |
+```bash
+# 注册
+curl -X POST http://localhost:6001/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"demo","password":"123456","nickname":"演示用户"}'
+
+# 登录（返回 JWT token 与用户信息）
+curl -X POST http://localhost:6001/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"demo","password":"123456"}'
+
+# 携带 token 访问受保护接口
+curl http://localhost:6001/api/user/me \
+  -H 'Authorization: Bearer <上一步返回的 token>'
+```
 
 > 提示：当前仅使用本机开发数据库，连接账号（`root`）仅用于本地调试，请勿在生产环境复用。
 
 ## 相关文档
 
 - [AGENTS.md](AGENTS.md) — 项目协作规范（分层架构、编码规范、提交约定）
+- [docs/user-module.md](docs/user-module.md) — 用户模块技术梳理（登录逻辑、认证链路、流程图）

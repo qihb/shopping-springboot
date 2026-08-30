@@ -1,5 +1,6 @@
 server:
-  port: 8080
+  # 6001 端口，避免与其他本地项目冲突
+  port: 6001
 
 spring:
   application:
