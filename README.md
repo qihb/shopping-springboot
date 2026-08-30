@@ -44,6 +44,7 @@ spring-shop
 - **用户与认证**：注册（用户名唯一、BCrypt 加密）、登录（校验通过签发 JWT）、`GET /api/user/me` 获取当前登录用户。
 - **Spring Security 集成**：JWT 认证过滤器，除白名单接口外一律要求登录，当前用户 id 通过 `UserContext` 获取。
 - **数据库迁移**：Flyway 版本化脚本管理表结构（V1 用户 / V2 商品 / V3 订单与购物车）。
+- **测试与 CI**：JUnit 5 + Mockito 单元测试、MockMvc + H2 集成测试（不依赖本地 MySQL）、GitHub Actions 自动构建。
 - **健康检查接口**：`GET /api/health` 用于验证服务是否正常启动。
 
 ## 业务规划
@@ -133,3 +134,4 @@ curl http://localhost:6001/api/user/me \
 
 - [AGENTS.md](AGENTS.md) — 项目协作规范（分层架构、编码规范、提交约定）
 - [docs/user-module.md](docs/user-module.md) — 用户模块技术梳理（登录逻辑、认证链路、流程图）
+- [docs/collaboration-plan.md](docs/collaboration-plan.md) — 基础框架评估与多人协作方案

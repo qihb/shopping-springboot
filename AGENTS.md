@@ -8,7 +8,7 @@
 - **项目定位**：Java 电商网站后端，**以学习为主要目的**，单体应用架构（后续可扩展）
 - **基础框架**：Spring Boot 3.5.16 + Maven 多模块 + Java 21
 - **持久层**：MyBatis-Plus 3.5.17 + MySQL 8
-- **当前状态**：已完成基础框架搭建（统一响应、全局异常处理、健康检查接口），业务模块待开发
+- **当前状态**：基础框架与用户模块已完成（注册/登录/JWT 认证），测试基座与 CI 已就绪，商品/购物车/订单模块待开发
 
 ## 技术栈
 
@@ -20,6 +20,7 @@
 | MyBatis-Plus | 3.5.17 | ORM / 持久层 |
 | MySQL | 8.x | 数据库 |
 | spring-boot-starter-validation | - | 参数校验 |
+| JUnit 5 + Mockito + H2 | - | 测试：单元测试 + 接口集成测试（H2 以 MySQL 模式跑迁移脚本） |
 
 ## 项目结构
 
@@ -28,20 +29,25 @@ spring_shop/
 ├── pom.xml                     # 父 POM：统一依赖管理
 ├── spring-shop-common/         # 公共模块：不依赖业务
 │   └── src/main/java/com/springshop/common/
-│       ├── config/             # 全局配置（如 MybatisPlusConfig）
+│       ├── config/             # 全局配置（MybatisPlus/Jackson/CORS）
 │       ├── exception/          # 业务异常 + 全局异常处理
-│       └── result/             # 统一响应 Result / ResultCode
-└── spring-shop-web/            # 启动模块：依赖 common
+│       ├── result/             # 统一响应 Result / ResultCode / PageResult
+│       ├── dto/                # 通用分页入参 PageQuery
+│       └── security/           # JWT 工具 JwtTokenProvider、用户上下文 UserContext
+├── spring-shop-user/           # 用户模块：注册、登录、当前用户
+└── spring-shop-web/            # 启动模块：依赖所有业务模块
     └── src/main/java/com/springshop/web/
-        ├── controller/         # 控制器层
+        ├── controller/         # 控制器层（健康检查）
+        ├── security/           # SecurityConfig / JwtAuthenticationFilter
         ├── SpringShopApplication.java  # 启动类
-        └── resources/application.yml   # 配置
+        └── resources/          # application.yml + db/migration 迁移脚本
 ```
 
 ### 模块职责
 
 - **spring-shop-common**：跨模块共享的公共代码，**禁止出现业务逻辑**，只放通用能力（统一响应、异常、配置、工具类、通用枚举等）。
-- **spring-shop-web**：应用启动模块，含启动类、控制器与配置文件，依赖 common 模块。
+- **spring-shop-user**：用户业务模块（注册、登录、JWT 认证适配），依赖 common。
+- **spring-shop-web**：应用启动模块，含启动类、控制器、安全配置与配置文件，统一依赖所有业务模块。
 
 ### 新增业务模块约定
 
@@ -50,6 +56,7 @@ spring_shop/
 1. 在父 POM 的 `<modules>` 中注册，并在 `<dependencyManagement>` 中声明版本。
 2. 模块内部按 `controller / service / mapper / entity / dto / vo` 分层组织包。
 3. 业务模块依赖 `spring-shop-common`；web 启动模块统一依赖所有业务模块。
+4. 在 `ResultCode` 中申请**本模块专属的错误码段**（见「错误码段位」），禁止占用其他模块段位。
 
 ## 分层架构规范
 
@@ -109,6 +116,20 @@ public Result<String> health() {
 - 需要新增响应码时，在 `ResultCode` 枚举中扩展，**不要使用魔法数字**。
 - 全局兜底由 `GlobalExceptionHandler` 负责（参数校验、类型转换、未知异常）。
 
+### 错误码段位
+
+`ResultCode` 为全局共享枚举，多人并行开发时**按段位分配**，避免改同一文件冲突：
+
+| 段位 | 归属 |
+|------|------|
+| 0~99 | 公共错误（参数/鉴权/系统） |
+| 1000~1999 | 用户模块 |
+| 2000~2999 | 商品模块 |
+| 3000~3999 | 购物车模块 |
+| 4000~4999 | 订单模块 |
+
+新增错误码必须使用本模块段位内的数字。
+
 ### 参数校验
 
 - 入参 DTO 使用 `spring-boot-starter-validation` 的注解（`@NotBlank`、`@NotNull`、`@Size` 等），并在 Controller 参数上加 `@Valid` / `@Validated`。
@@ -124,6 +145,14 @@ public Result<String> health() {
 - 默认连接 `localhost:3306/spring_shop`，用户名 `root`。
 - 密码通过环境变量 `MYSQL_PASSWORD` 覆盖，**禁止把真实密码硬编码提交**。
 
+### Flyway 迁移脚本约定
+
+- 表结构变更一律通过 `spring-shop-web/src/main/resources/db/migration/` 下的 `V{n}__描述.sql` 管理，应用启动时自动执行。
+- **禁止修改已提交的迁移脚本**：Flyway 会校验脚本 checksum，改动会导致已应用过该脚本的库启动失败。需要变更表结构时新增 `V{n+1}` 脚本。
+- 新脚本**不带 `IF NOT EXISTS`**（仅 V1~V3 因兼容历史手建库保留）。
+- 多人并行时提前 pull 远端，避免重复的 V 版本号；冲突时先合入小的 PR。
+- 集成测试使用 `spring-shop-web/src/test/resources/db/migration-test/` 下的测试专用脚本（索引名全局唯一化以兼容 H2 的限制），与主脚本保持同步。
+
 ## 构建与运行
 
 ```bash
@@ -133,11 +162,14 @@ mvn clean package
 # 仅编译检查
 mvn compile
 
+# 运行全部测试（单元 + 集成，使用 H2 内存库，无需本地 MySQL）
+mvn test
+
 # 运行 web 模块
 mvn -pl spring-shop-web -am spring-boot:run
 
 # 启动后健康检查
-curl http://localhost:8080/api/health
+curl http://localhost:6001/api/health
 ```
 
 ## 工作流规范
@@ -148,6 +180,14 @@ curl http://localhost:8080/api/health
 2. **小步提交**：一个功能一个改动，保持 diff 聚焦。
 3. **保持风格一致**：新代码遵循本文件与现有代码风格。
 4. **学习导向**：作为学习项目，代码中可保留适度注释解释「为什么这样做」，方便复习。
+5. **测试跟随**：新功能/修复必须附带测试（Service 层单元测试 + 必要的接口集成测试），提交前保证 `mvn test` 全绿。
+
+### 分支与合并（多人协作）
+
+- `main` 为受保护主干，**禁止直接 push**；开发在 `feature/<模块>-<功能>` 分支进行，完成后通过 Pull Request 合入 main。
+- PR 必须通过 CI（GitHub Actions 自动执行 `mvn -B verify`）并经至少 1 人评审后方可合并。
+- 每个 PR 保持单一功能；合入前先同步远端 `main` 减少冲突。
+- 多人并行开发时，各业务模块（商品/订单/购物车）分属不同分支互不阻塞。
 
 ### 代码提交
 
@@ -164,3 +204,4 @@ curl http://localhost:8080/api/health
 - 禁止直接修改 `target/` 目录下的产物。
 - 禁止提交真实数据库密码、密钥等敏感信息。
 - 禁止在 Controller 中写业务逻辑或直接访问 Mapper。
+- 禁止不经评审修改 `spring-shop-common` 的公共能力（全员依赖，改动影响面大）。

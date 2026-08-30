@@ -1,0 +1,22 @@
+# 测试环境配置（@ActiveProfiles("test") 激活）
+# 用 H2 内存库（MySQL 兼容模式）跑 Flyway 迁移与业务逻辑，
+# 不依赖本地 MySQL，保证本地与 CI 行为一致。
+spring:
+  datasource:
+    driver-class-name: org.h2.Driver
+    # MODE=MySQL 兼容 MySQL 语法；DATABASE_TO_LOWER/CASE_INSENSITIVE_IDENTIFIERS 保证表名大小写一致；
+    # NON_KEYWORDS=USER：H2 中 USER 是保留字，而 MyBatis-Plus 生成的 SQL 不带反引号，需声明为非关键字
+    url: jdbc:h2:mem:spring_shop_test;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1;NON_KEYWORDS=USER
+    username: sa
+    password:
+  flyway:
+    # 测试库是全新空库，从 V1 开始顺序执行即可，无需 baseline
+    baseline-on-migrate: false
+    # 使用测试专用迁移脚本（db/migration-test）：
+    # 主脚本 V2/V3 存在跨表重名索引（MySQL 允许，H2 不允许），此处用索引名全局唯一化的副本
+    locations: classpath:db/migration-test
+
+mybatis-plus:
+  configuration:
+    # 测试环境默认不打印 SQL，保持输出干净
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
