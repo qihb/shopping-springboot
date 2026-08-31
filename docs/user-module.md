@@ -43,6 +43,7 @@ spring-shop-web（启动模块）
 |--------|------|--------|
 | 密码存储 | BCrypt（`BCryptPasswordEncoder`），自动加盐 | 同一明文每次加密结果不同，防彩虹表 |
 | 登录凭证 | 无状态 JWT（HS256，过期 2h），服务端不存 session | 天然支持水平扩展，无需 session 同步 |
+| 主体区分 | token 内增加 `userType=USER` claim | 与管理后台 `ADMIN` token 区分，避免前后台越权 |
 | 会话管理 | `SessionCreationPolicy.STATELESS` + 关闭 CSRF | 登录态全靠 JWT 请求头，无 cookie 就无 CSRF 攻击面 |
 | 用户标识传递 | `ThreadLocal`（`UserContext`），由过滤器写入 | Controller 无需在入参传 userId，请求内共享、请求间隔离 |
 | 用户名枚举防护 | 用户不存在与密码错误统一返回 `PASSWORD_ERROR` | 不暴露"该用户名是否已注册" |
@@ -91,7 +92,7 @@ flowchart TD
     G -- 不匹配 --> F
     G -- 匹配 --> H{user.status == 1?}
     H -- 否 --> I[抛 BusinessException<br/>USER_DISABLED 1004]
-    H -- 是 --> J[jwtTokenProvider.generateToken<br/>subject=username, claim=userId<br/>过期 2h, HS256 签名]
+    H -- 是 --> J[jwtTokenProvider.generateToken<br/>subject=username, claim=userId + userType=USER<br/>过期 2h, HS256 签名]
     J --> K[返回 LoginResponse<br/>token + UserInfoVO]
     K --> L[前端保存 token<br/>后续请求头带 Authorization: Bearer token]
 ```
@@ -127,6 +128,7 @@ sequenceDiagram
 **关键点**：
 
 - 过滤器挂在 `UsernamePasswordAuthenticationFilter` **之前**（`addFilterBefore`）
+- 当前项目已演进为**前后台双过滤链**：`/api/admin/**` 走管理员链，前台接口继续走用户链；前台用户 token 无法访问后台接口
 - 白名单 `/api/auth/**`、`/api/health`、Swagger 路径匿名可访问，其余接口全部要求认证（`SecurityConfig`）
 - 未认证返回 `401` + `Result.fail(UNAUTHORIZED)`，而非 403
 
@@ -147,6 +149,6 @@ sequenceDiagram
 
 1. **`UserDetailsServiceImpl` 不是登录入口**：它只供 Spring Security 每次请求认证时按用户名加载用户。真正的"账号密码校验 + 签发 token"逻辑在 `UserServiceImpl.login`，两条路径独立。
 2. **`UserContext.clear()` 必不可少**：请求结束不清理的话，Tomcat 线程池复用时下一个请求会读到上一个用户的 id。
-3. **token 里没有角色**：`UserPrincipal.getAuthorities()` 返回空集合，目前 `@EnableMethodSecurity` 已开启但无角色注解可用，后续加 RBAC 从这里扩展。
+3. **前台 token 现在带 `userType=USER`，但仍然不带角色权限**：`UserPrincipal.getAuthorities()` 返回空集合，目前 `@EnableMethodSecurity` 已开启但前台侧尚未引入 RBAC；后台 RBAC 已独立放在 `spring-shop-admin`。
 4. **JWT 无状态 = 无法主动踢人**：禁用用户只是登录时校验 status，已签发的 token 在过期前仍有效。
 5. **校验异常统一被 `GlobalExceptionHandler` 处理**，返回 400 + 第一个字段错误信息，不是 Spring 默认格式。

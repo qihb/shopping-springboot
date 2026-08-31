@@ -32,6 +32,11 @@
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-jsqlparser</artifactId>
         </dependency>
+        <!-- Redis：缓存、登录失败锁定、token 黑名单等通用能力 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
         <!-- JWT 签发与验签（common 提供通用安全能力，供各模块复用） -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>

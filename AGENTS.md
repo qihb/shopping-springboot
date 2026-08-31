@@ -8,7 +8,7 @@
 - **项目定位**：Java 电商网站后端，**以学习为主要目的**，单体应用架构（后续可扩展）
 - **基础框架**：Spring Boot 3.5.16 + Maven 多模块 + Java 21
 - **持久层**：MyBatis-Plus 3.5.17 + MySQL 8
-- **当前状态**：基础框架与用户模块已完成（注册/登录/JWT 认证），测试基座与 CI 已就绪，商品/购物车/订单模块待开发
+- **当前状态**：基础框架、用户模块、管理后台已完成（注册/登录/JWT 认证、RBAC 权限中心、操作审计），测试基座与 CI 已就绪，商品/购物车/订单模块待开发
 
 ## 技术栈
 
@@ -19,6 +19,7 @@
 | Maven | - | 构建工具 |
 | MyBatis-Plus | 3.5.17 | ORM / 持久层 |
 | MySQL | 8.x | 数据库 |
+| Redis | 6.x | 缓存（登录失败锁定、token 黑名单） |
 | spring-boot-starter-validation | - | 参数校验 |
 | JUnit 5 + Mockito + H2 | - | 测试：单元测试 + 接口集成测试（H2 以 MySQL 模式跑迁移脚本） |
 
@@ -29,17 +30,24 @@ spring_shop/
 ├── pom.xml                     # 父 POM：统一依赖管理
 ├── spring-shop-common/         # 公共模块：不依赖业务
 │   └── src/main/java/com/springshop/common/
-│       ├── config/             # 全局配置（MybatisPlus/Jackson/CORS）
+│       ├── config/             # 全局配置（MybatisPlus/Jackson/CORS/Redis）
 │       ├── exception/          # 业务异常 + 全局异常处理
 │       ├── result/             # 统一响应 Result / ResultCode / PageResult
 │       ├── dto/                # 通用分页入参 PageQuery
-│       └── security/           # JWT 工具 JwtTokenProvider、用户上下文 UserContext
+│       └── security/           # JWT 工具 JwtTokenProvider、用户上下文 UserContext、RedisKeys
 ├── spring-shop-user/           # 用户模块：注册、登录、当前用户
+├── spring-shop-admin/          # 管理后台模块：管理员认证、RBAC 权限中心、操作审计
+│   └── src/main/java/com/springshop/admin/
+│       ├── aspect/             # 操作审计注解 + AOP 切面
+│       ├── config/             # 初始数据初始化器 AdminDataInitializer
+│       ├── security/           # AdminJwtAuthenticationFilter / AdminUserPrincipal / AdminUserDetailsService
+│       ├── controller/ service/ mapper/ entity/ dto/ vo/
+│       └── pom.xml             # 依赖 common + validation + aop + spring-security-web
 └── spring-shop-web/            # 启动模块：依赖所有业务模块
-    └── src/main/java/com/springshop/web/
+    └── src/main/java/com/springshop/
+        ├── SpringShopApplication.java  # 启动类（根包 com.springshop，扫描全部模块）
         ├── controller/         # 控制器层（健康检查）
-        ├── security/           # SecurityConfig / JwtAuthenticationFilter
-        ├── SpringShopApplication.java  # 启动类
+        ├── security/           # SecurityConfig（双过滤链）/ JwtAuthenticationFilter
         └── resources/          # application.yml + db/migration 迁移脚本
 ```
 
@@ -47,7 +55,8 @@ spring_shop/
 
 - **spring-shop-common**：跨模块共享的公共代码，**禁止出现业务逻辑**，只放通用能力（统一响应、异常、配置、工具类、通用枚举等）。
 - **spring-shop-user**：用户业务模块（注册、登录、JWT 认证适配），依赖 common。
-- **spring-shop-web**：应用启动模块，含启动类、控制器、安全配置与配置文件，统一依赖所有业务模块。
+- **spring-shop-admin**：管理后台业务模块（管理员认证、RBAC 权限中心、操作审计），依赖 common。
+- **spring-shop-web**：应用启动模块，含启动类、控制器、安全配置（前后台双过滤链）与配置文件，统一依赖所有业务模块。
 
 ### 新增业务模块约定
 
@@ -127,6 +136,7 @@ public Result<String> health() {
 | 2000~2999 | 商品模块 |
 | 3000~3999 | 购物车模块 |
 | 4000~4999 | 订单模块 |
+| 5000~5999 | 管理后台模块 |
 
 新增错误码必须使用本模块段位内的数字。
 

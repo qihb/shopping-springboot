@@ -17,7 +17,8 @@
 | 构建 | Maven | 多模块管理 |
 | 持久层 | MyBatis-Plus 3.5.17 | 通用 CRUD、分页插件 |
 | 数据库 | MySQL 8 | |
-| 安全认证 | Spring Security + JWT | 登录鉴权、BCrypt 密码加密 |
+| 安全认证 | Spring Security + JWT | 前后台双链路隔离、RBAC 权限、BCrypt 密码加密 |
+| 缓存 | Redis | 登录失败锁定、token 黑名单主动失效 |
 | 数据库迁移 | Flyway | 版本化建表脚本 |
 | 参数校验 | spring-boot-starter-validation | DTO 注解校验 |
 | API 文档 | springdoc-openapi | 接口注解（@Tag / @Operation） |
@@ -29,9 +30,12 @@ spring-shop
 ├── spring-shop-common   公共模块：统一响应(Result)、响应码枚举(ResultCode)、
 │                        业务异常(BusinessException)、全局异常处理(GlobalExceptionHandler)、
 │                        MyBatis-Plus 配置(分页插件)、JWT 工具(JwtTokenProvider)、
-│                        通用分页入参(PageQuery)/分页结果(PageResult)——禁止包含业务逻辑
+│                        Redis 配置(RedisConfig/RedisKeys)、通用分页入参(PageQuery)/分页结果(PageResult)
+│                        ——禁止包含业务逻辑
 ├── spring-shop-user     用户模块：注册、登录（JWT 签发）、当前用户信息
-└── spring-shop-web      启动模块：SpringBoot 启动类、控制器、Spring Security 配置、配置文件
+├── spring-shop-admin    管理后台模块：管理员认证（失败锁定 + token 黑名单）、RBAC 权限中心
+│                        （角色管理、菜单管理）、操作审计（AOP 落库）
+└── spring-shop-web      启动模块：SpringBoot 启动类、控制器、Spring Security 双过滤链配置、配置文件
 ```
 
 ### 基础能力（已实现）
@@ -42,8 +46,10 @@ spring-shop
 - **MyBatis-Plus 集成**：分页插件、下划线转驼峰映射、主键自增、逻辑删除、乐观锁、字段自动填充（create_time / update_time / is_deleted / version）已就绪。
 - **通用分页**：`PageQuery`（页码 + 每页条数）与 `PageResult<T>`（列表 + 总数 + 总页数），各模块分页接口复用。
 - **用户与认证**：注册（用户名唯一、BCrypt 加密）、登录（校验通过签发 JWT）、`GET /api/user/me` 获取当前登录用户。
-- **Spring Security 集成**：JWT 认证过滤器，除白名单接口外一律要求登录，当前用户 id 通过 `UserContext` 获取。
-- **数据库迁移**：Flyway 版本化脚本管理表结构（V1 用户 / V2 商品 / V3 订单与购物车）。
+- **Spring Security 集成**：前后台双过滤链隔离（`/api/admin/**` 与前台互不越权），JWT 认证过滤器区分 ADMIN / USER 身份，除白名单接口外一律要求登录，当前用户 id 通过 `UserContext` 获取。
+- **管理后台与权限中心（RBAC）**：管理员登录（连续失败 5 次锁定 15 分钟、退出登录 token 进 Redis 黑名单主动失效）、角色管理、菜单管理（菜单即权限标识），支持 `@PreAuthorize` 按钮级鉴权；初始超级管理员 `admin / admin123` 启动时自动创建。
+- **操作审计**：`@OperationLog` 注解 + AOP 切面，自动记录后台关键操作的模块、操作类型、参数（密码脱敏）、IP、耗时并落库。
+- **数据库迁移**：Flyway 版本化脚本管理表结构（V1 用户 / V2 商品 / V3 订单与购物车 / V4 管理后台与权限）。
 - **测试与 CI**：JUnit 5 + Mockito 单元测试、MockMvc + H2 集成测试（不依赖本地 MySQL）、GitHub Actions 自动构建。
 - **健康检查接口**：`GET /api/health` 用于验证服务是否正常启动。
 
@@ -54,6 +60,7 @@ spring-shop
 | 模块 | 内容 | 状态 |
 |------|------|------|
 | 用户模块 | 注册、登录、个人中心 | ✅ 已完成 |
+| 管理后台 | 管理员认证（失败锁定 + 黑名单）、RBAC 权限中心、角色/菜单管理、操作审计 | ✅ 已完成 |
 | 商品模块 | 分类、商品列表、商品详情（SPU/SKU） | ⏳ 待开发（表结构已就绪） |
 | 购物车模块 | 加购、修改数量、勾选结算 | ⏳ 待开发（表结构已就绪） |
 | 订单模块 | 收货地址、下单、订单状态流转 | ⏳ 待开发（表结构已就绪） |
@@ -67,6 +74,7 @@ spring-shop
 - JDK 21
 - Maven 3.6+
 - MySQL 8（本地运行）
+- Redis 6+（本地运行，管理后台登录锁定 / token 黑名单依赖）
 
 ### 1. 准备数据库
 
@@ -110,6 +118,23 @@ curl http://localhost:6001/api/health
 
 ## 测试账号
 
+### 管理后台
+
+启动时自动创建超级管理员（数据库 admin_user 表为空时）：
+
+```bash
+# 管理员登录（默认：admin / admin123，上线后务必修改密码）
+curl -X POST http://localhost:6001/api/admin/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}'
+
+# 携带 token 访问后台接口（如角色分页）
+curl http://localhost:6001/api/admin/roles \
+  -H 'Authorization: Bearer <上一步返回的 token>'
+```
+
+### 前台用户
+
 用户模块已开发，**直接调用注册接口创建账号**，即可登录体验：
 
 ```bash
@@ -134,4 +159,5 @@ curl http://localhost:6001/api/user/me \
 
 - [AGENTS.md](AGENTS.md) — 项目协作规范（分层架构、编码规范、提交约定）
 - [docs/user-module.md](docs/user-module.md) — 用户模块技术梳理（登录逻辑、认证链路、流程图）
+- [docs/admin-module.md](docs/admin-module.md) — 管理后台技术梳理（双过滤链、RBAC、Redis 登录加固、操作审计、架构取舍）
 - [docs/collaboration-plan.md](docs/collaboration-plan.md) — 基础框架评估与多人协作方案

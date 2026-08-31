@@ -11,6 +11,13 @@ spring:
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
+  # Redis：登录失败锁定、token 黑名单等能力依赖；生产通过环境变量覆盖
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3s
   # 数据库迁移：启动时自动执行 classpath:db/migration 下未应用的脚本
   flyway:
     enabled: true

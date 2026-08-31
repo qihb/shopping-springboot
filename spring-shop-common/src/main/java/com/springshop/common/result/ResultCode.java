@@ -16,7 +16,19 @@ public enum ResultCode {
     USERNAME_EXISTS(1001, "用户名已存在"),
     USER_NOT_FOUND(1002, "用户不存在"),
     PASSWORD_ERROR(1003, "用户名或密码错误"),
-    USER_DISABLED(1004, "账号已被禁用");
+    USER_DISABLED(1004, "账号已被禁用"),
+
+    // 业务码：管理后台模块（5000 段）
+    ADMIN_USER_NOT_FOUND(5001, "管理员不存在"),
+    ADMIN_PASSWORD_ERROR(5002, "用户名或密码错误"),
+    ADMIN_DISABLED(5003, "账号已被禁用"),
+    ADMIN_LOCKED(5004, "登录失败次数过多，账号已临时锁定，请稍后再试"),
+    ADMIN_TOKEN_INVALID(5005, "登录已失效，请重新登录"),
+    ADMIN_ROLE_NOT_FOUND(5010, "角色不存在"),
+    ADMIN_ROLE_CODE_EXISTS(5011, "角色编码已存在"),
+    ADMIN_ROLE_IN_USE(5012, "角色已分配给管理员，不可删除"),
+    ADMIN_MENU_NOT_FOUND(5020, "菜单不存在"),
+    ADMIN_MENU_HAS_CHILDREN(5021, "菜单存在子节点，不可删除");
 
     private final Integer code;
 
