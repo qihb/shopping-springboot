@@ -28,6 +28,10 @@
             <artifactId>spring-shop-admin</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-product</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
