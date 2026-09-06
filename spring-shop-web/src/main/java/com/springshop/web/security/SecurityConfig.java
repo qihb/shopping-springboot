@@ -88,6 +88,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // 白名单：匿名可访问
                         .requestMatchers("/api/auth/**", "/api/health").permitAll()
+                        .requestMatchers("/api/categories/tree", "/api/products", "/api/products/**").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/webjars/**").permitAll()
                         // 其余接口必须已认证
                         .anyRequest().authenticated())
