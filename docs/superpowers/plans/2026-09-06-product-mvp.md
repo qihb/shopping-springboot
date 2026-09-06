@@ -4,7 +4,7 @@
 
 **Goal:** 基于现有 spring-shop 多模块单体框架，完成商品模块最小可用版本：商品分类管理、SPU/SKU/图片的后台管理，前台分类树、商品列表、商品详情查询，配套单元测试与 H2 集成测试全绿。
 
-**Architecture:** 新增 `spring-shop-product` Maven 模块，内部按「分类子域 + 商品子域」拆分。后台写操作由 `CategoryService` 与 `ProductManageService` 承担（商品保存/修改一次性落 SPU、SKU、图片三张表）；前台展示由 `CategoryQueryService` 与 `ProductQueryService` 做只读查询；Controller 分层为 admin（需 RBAC 鉴权 + 操作审计）与 app（登录用户即可）。持久层复用现有 Flyway V2 表结构与 MyBatis-Plus 约定。
+**Architecture:** 新增 `spring-shop-product` Maven 模块，内部按「分类子域 + 商品子域」拆分。后台写操作由 `CategoryService` 与 `ProductManageService` 承担（商品保存/修改一次性落 SPU、SKU、图片三张表）；前台展示由 `CategoryQueryService` 与 `ProductQueryService` 做只读查询；Controller 分层为 admin（需 RBAC 鉴权）与 app（公开或登录用户即可）。MVP 阶段 product 后台控制器暂不使用 admin 模块的 `@OperationLog` 注解（避免 product 反向依赖 admin），操作审计能力后续通过在 admin 模块扩展 AOP 切点覆盖 `/api/admin/**` 补齐；RBAC 权限码由 `AdminDataInitializer` 初始化商品管理菜单时同步写入。持久层复用现有 Flyway V2 表结构与 MyBatis-Plus 约定。
 
 **Tech Stack:** Java 21 + Spring Boot 3.5.16 + Maven 多模块 + MyBatis-Plus 3.5.17 + Spring Security + JWT + JUnit5 + Mockito + H2（集成测试内存库）+ springdoc-openapi 注解
 
@@ -13,7 +13,7 @@
 ## 一、文件结构总览
 
 **新增模块与配置**
-- Create: `spring-shop-product/pom.xml` 商品模块 POM（依赖 common + validation + swagger-annotations）
+- Create: `spring-shop-product/pom.xml` 商品模块 POM（依赖 common + mybatis-plus + validation + spring-security-core + swagger-annotations）
 - Modify: `pom.xml` 注册 product 模块并在 `<dependencyManagement>` 声明版本
 - Modify: `spring-shop-web/pom.xml` 增加 product 依赖
 - Modify: `spring-shop-common/src/main/java/com/springshop/common/result/ResultCode.java` 新增 2000~2099 商品错误码段
@@ -999,7 +999,6 @@ public class AdminCategoryController {
     }
 
     @Operation(summary = "新增分类")
-    @OperationLog(module = "商品管理", operation = "新增分类")
     @PreAuthorize("hasAuthority('product:category:create')")
     @PostMapping
     public Result<Void> create(@Valid @RequestBody CategorySaveRequest request) {
@@ -1008,7 +1007,6 @@ public class AdminCategoryController {
     }
 
     @Operation(summary = "修改分类")
-    @OperationLog(module = "商品管理", operation = "修改分类")
     @PreAuthorize("hasAuthority('product:category:update')")
     @PutMapping("/{id}")
     public Result<Void> update(@PathVariable Long id, @Valid @RequestBody CategorySaveRequest request) {
@@ -1017,7 +1015,6 @@ public class AdminCategoryController {
     }
 
     @Operation(summary = "删除分类")
-    @OperationLog(module = "商品管理", operation = "删除分类")
     @PreAuthorize("hasAuthority('product:category:delete')")
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable Long id) {
@@ -2520,7 +2517,6 @@ public class AdminProductController {
     }
 
     @Operation(summary = "新增商品")
-    @OperationLog(module = "商品管理", operation = "新增商品")
     @PreAuthorize("hasAuthority('product:product:create')")
     @PostMapping
     public Result<Void> create(@Valid @RequestBody ProductSaveRequest request) {
@@ -2529,7 +2525,6 @@ public class AdminProductController {
     }
 
     @Operation(summary = "修改商品")
-    @OperationLog(module = "商品管理", operation = "修改商品")
     @PreAuthorize("hasAuthority('product:product:update')")
     @PutMapping("/{id}")
     public Result<Void> update(@PathVariable Long id, @Valid @RequestBody ProductSaveRequest request) {
@@ -2538,7 +2533,6 @@ public class AdminProductController {
     }
 
     @Operation(summary = "上下架")
-    @OperationLog(module = "商品管理", operation = "商品上下架")
     @PreAuthorize("hasAuthority('product:product:update')")
     @PutMapping("/{id}/status")
     public Result<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {

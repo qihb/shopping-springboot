@@ -120,6 +120,15 @@ public class AdminDataInitializer implements ApplicationRunner {
         insertMenu(menuMapper, "修改菜单", 3, menuNode.getId(), null, "system:menu:update", null, 2, menus);
         insertMenu(menuMapper, "删除菜单", 3, menuNode.getId(), null, "system:menu:delete", null, 3, menus);
 
+        Menu product = insertMenu(menuMapper, "商品管理", 1, 0L, "/product", "product", "Goods", 2, menus);
+        Menu category = insertMenu(menuMapper, "分类管理", 2, product.getId(), "/product/category", "product:category:list", null, 1, menus);
+        insertMenu(menuMapper, "新增分类", 3, category.getId(), null, "product:category:create", null, 1, menus);
+        insertMenu(menuMapper, "修改分类", 3, category.getId(), null, "product:category:update", null, 2, menus);
+        insertMenu(menuMapper, "删除分类", 3, category.getId(), null, "product:category:delete", null, 3, menus);
+        Menu productMgmt = insertMenu(menuMapper, "商品管理", 2, product.getId(), "/product/list", "product:product:list", null, 2, menus);
+        insertMenu(menuMapper, "新增商品", 3, productMgmt.getId(), null, "product:product:create", null, 1, menus);
+        insertMenu(menuMapper, "修改商品", 3, productMgmt.getId(), null, "product:product:update", null, 2, menus);
+
         return menus;
     }
 
