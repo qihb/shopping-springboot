@@ -43,4 +43,25 @@ class ProductIntegrationTest {
         assertNotNull(json);
         assertEquals(200, json.get("code").asInt());
     }
+
+    @Test
+    void admin_product_page_should_require_login() throws Exception {
+        mockMvc.perform(get("/api/admin/products")
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void app_product_page_should_public() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/api/products")
+                        .param("current", "1")
+                        .param("size", "5")
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsByteArray());
+        assertNotNull(json);
+        assertEquals(200, json.get("code").asInt());
+    }
 }
