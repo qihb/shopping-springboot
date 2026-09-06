@@ -18,6 +18,16 @@ public enum ResultCode {
     PASSWORD_ERROR(1003, "用户名或密码错误"),
     USER_DISABLED(1004, "账号已被禁用"),
 
+    // 业务码：商品模块（2000 段）
+    PRODUCT_CATEGORY_NOT_FOUND(2001, "商品分类不存在"),
+    PRODUCT_CATEGORY_HAS_CHILDREN(2002, "分类下存在子分类，不可删除"),
+    PRODUCT_CATEGORY_HAS_PRODUCTS(2003, "分类下存在商品，不可删除"),
+    PRODUCT_NOT_FOUND(2010, "商品不存在"),
+    PRODUCT_SKU_NOT_FOUND(2011, "SKU 不存在"),
+    PRODUCT_SKU_CODE_DUPLICATE(2012, "SKU 编码重复"),
+    PRODUCT_SKU_EMPTY(2013, "商品至少需要一个 SKU"),
+    PRODUCT_OFF_SHELF(2014, "商品已下架"),
+
     // 业务码：管理后台模块（5000 段）
     ADMIN_USER_NOT_FOUND(5001, "管理员不存在"),
     ADMIN_PASSWORD_ERROR(5002, "用户名或密码错误"),
