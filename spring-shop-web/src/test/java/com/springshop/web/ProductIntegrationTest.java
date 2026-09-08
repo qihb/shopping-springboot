@@ -2,21 +2,31 @@ package com.springshop.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.annotation.Transactional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@ActiveProfiles("test")
+@Transactional
 class ProductIntegrationTest {
 
     @Autowired
@@ -24,6 +34,16 @@ class ProductIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @MockBean
+    private StringRedisTemplate stringRedisTemplate;
+
+    @BeforeEach
+    void setUpRedisMocks() {
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+    }
 
     @Test
     void admin_category_tree_should_require_login() throws Exception {
