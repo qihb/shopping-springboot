@@ -139,7 +139,7 @@ class ProductQueryServiceImplTest {
 
         when(productMapper.selectPage(any(Page.class), any(LambdaQueryWrapper.class))).thenReturn(page);
         when(categoryMapper.selectById(5L)).thenReturn(buildCategory(5L, "数码"));
-        when(categoryMapper.selectBatchIds(any())).thenReturn(List.of(buildCategory(5L, "数码")));
+        when(categoryMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(buildCategory(5L, "数码")));
         when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
                 buildSku(1L, 100L, "S1", new BigDecimal("100.00")),
                 buildSku(2L, 100L, "S2", new BigDecimal("80.00"))

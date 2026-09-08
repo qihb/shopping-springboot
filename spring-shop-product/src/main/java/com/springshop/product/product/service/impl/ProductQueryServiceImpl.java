@@ -165,7 +165,8 @@ public class ProductQueryServiceImpl implements ProductQueryService {
         if (categoryIds == null || categoryIds.isEmpty()) {
             return Collections.emptyMap();
         }
-        List<ProductCategory> categories = categoryMapper.selectBatchIds(categoryIds);
+        List<ProductCategory> categories = categoryMapper.selectList(new LambdaQueryWrapper<ProductCategory>()
+                .in(ProductCategory::getId, categoryIds));
         Map<Long, String> map = new HashMap<>();
         for (ProductCategory c : categories) {
             map.put(c.getId(), c.getName());

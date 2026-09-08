@@ -22,5 +22,7 @@ jobs:
           cache: maven
 
       # 集成测试使用 H2 内存库，无需启动 MySQL 服务
+      # 必须 clean：避免 Maven 缓存旧的模块 JAR 导致多模块类路径不一致
+      # （例如 spring-shop-common ResultCode 新增枚举后缓存未刷新会引发 NoSuchFieldError）
       - name: Build and test
-        run: mvn -B verify
+        run: mvn -B clean verify
