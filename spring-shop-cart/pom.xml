@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.springshop</groupId>
+        <artifactId>spring-shop</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>spring-shop-cart</artifactId>
+    <name>spring-shop-cart</name>
+    <description>购物车模块：加购、改数量、勾选、删除与购物车列表</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-common</artifactId>
+        </dependency>
+        <!-- 复用商品模块的 SKU/商品只读查询，形成 web → cart → product → common 单向依赖 -->
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-product</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations-jakarta</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

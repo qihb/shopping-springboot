@@ -28,6 +28,12 @@ public enum ResultCode {
     PRODUCT_SKU_EMPTY(2013, "商品至少需要一个 SKU"),
     PRODUCT_OFF_SHELF(2014, "商品已下架"),
 
+    // 业务码：购物车模块（3000 段）
+    CART_ITEM_NOT_FOUND(3001, "购物车条目不存在"),
+    CART_QUANTITY_INVALID(3002, "购买数量不合法"),
+    CART_STOCK_INSUFFICIENT(3003, "库存不足"),
+    CART_SKU_DISABLED(3004, "该规格已停售"),
+
     // 业务码：管理后台模块（5000 段）
     ADMIN_USER_NOT_FOUND(5001, "管理员不存在"),
     ADMIN_PASSWORD_ERROR(5002, "用户名或密码错误"),
