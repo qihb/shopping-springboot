@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.springshop</groupId>
+        <artifactId>spring-shop</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>spring-shop-order</artifactId>
+    <name>spring-shop-order</name>
+    <description>订单模块：收货地址、下单、订单状态流转与后台发货</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-common</artifactId>
+        </dependency>
+        <!-- 复用商品模块的 SKU/商品只读查询与库存扣减 -->
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-product</artifactId>
+        </dependency>
+        <!-- 复用购物车条目读写（下单来源 = 勾选项，成功后清理） -->
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-cart</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations-jakarta</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
