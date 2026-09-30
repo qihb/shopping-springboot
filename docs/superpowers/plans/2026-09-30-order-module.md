@@ -13,7 +13,7 @@
 | 决策 | 说明 |
 |------|------|
 | **下单来源 = 购物车勾选项** | `POST /api/orders` 只传 `{addressId, remark}`，服务端读取当前用户 `checked = 1` 的购物车条目。前端「立即购买」后续迭代再支持（YAGNI） |
-| **库存扣减用条件更新** | `UPDATE product_sku SET stock = stock - #{qty} ... WHERE id = #{skuId} AND stock >= #{qty}`，影响行数 0 即库存不足抛 4004。不引入分布式锁/Redis 预扣，属于「乐观扣减 + 唯一订单号」的入门级并发方案，与 `collaboration-plan.md` 第五节的规划一致 |
+| **库存扣减用条件更新** | `UPDATE product_sku SET stock = stock - #{qty} ... WHERE id = #{skuId} AND stock >= #{qty}`，影响行数 0 即库存不足抛 4004。不引入分布式锁/Redis 预扣，属于「乐观扣减 + 唯一订单号」的轻量级并发方案，与 `collaboration-plan.md` 第五节的规划一致 |
 | **下单在同一事务内完成「校验 → 扣库存 → 写订单/明细 → 清购物车勾选项」** | 任一步失败（含库存不足）整体回滚，库存与购物车不会被写脏 |
 | **快照不可漂移** | 收货人/电话/地址拼接、商品名/规格/主图/成交单价全部落库快照，后续改地址、改商品不影响历史订单 |
 | **金额只用 BigDecimal** | `totalAmount` 与 `payAmount` 暂相等（无优惠券/运费，YAGNI），`DECIMAL(10,2)` |
@@ -284,7 +284,7 @@ public interface OrderMapper extends BaseMapper<Order> {
     /**
      * 条件扣减库存：库存不足时影响行数为 0，由调用方判定并抛业务异常
      *
-     * <p>单条 UPDATE 由数据库保证原子性，是入门级并发扣减方案（无需分布式锁）。
+     * <p>单条 UPDATE 由数据库保证原子性，是轻量级的并发扣减方案（无需分布式锁）。
      */
     @Update("UPDATE product_sku SET stock = stock - #{quantity}, version = version + 1 "
             + "WHERE id = #{skuId} AND stock >= #{quantity}")

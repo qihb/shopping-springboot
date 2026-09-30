@@ -1,14 +1,14 @@
 # AGENTS.md — spring-shop 项目协作规范
 
-本文件面向在本仓库中工作的开发者与 AI 编码助手，用于统一协作方式与代码规范，保证代码风格一致、可维护、可学习。
+本文件面向在本仓库中工作的开发者与 AI 编码助手，用于统一协作方式与代码规范，保证代码风格一致、可维护。
 
 ## 项目概述
 
 - **项目名称**：spring-shop
-- **项目定位**：Java 电商网站后端，**以学习为主要目的**，单体应用架构（后续可扩展）
+- **项目定位**：生产级 Java 电商网站后端，单体应用架构（可扩展）
 - **基础框架**：Spring Boot 3.5.16 + Maven 多模块 + Java 21
 - **持久层**：MyBatis-Plus 3.5.17 + MySQL 8
-- **当前状态**：基础框架、用户模块、管理后台已完成（注册/登录/JWT 认证、RBAC 权限中心、操作审计），测试基座与 CI 已就绪，商品/购物车/订单模块待开发
+- **当前状态**：用户、商品、购物车、订单、管理后台五大业务模块已全部交付（注册/登录/JWT 认证、RBAC 权限中心、操作审计、下单库存扣减），测试基座与 CI 已就绪
 
 ## 技术栈
 
@@ -36,6 +36,9 @@ spring_shop/
 │       ├── dto/                # 通用分页入参 PageQuery
 │       └── security/           # JWT 工具 JwtTokenProvider、用户上下文 UserContext、RedisKeys
 ├── spring-shop-user/           # 用户模块：注册、登录、当前用户
+├── spring-shop-product/        # 商品模块：分类、SPU/SKU/图片，前后台列表与详情（读服务聚合）、库存条件扣减
+├── spring-shop-cart/           # 购物车模块：加购、改数量、勾选、删除与购物车列表
+├── spring-shop-order/          # 订单模块：收货地址、下单（快照 + 扣库存）、状态流转、后台发货
 ├── spring-shop-admin/          # 管理后台模块：管理员认证、RBAC 权限中心、操作审计
 │   └── src/main/java/com/springshop/admin/
 │       ├── aspect/             # 操作审计注解 + AOP 切面
@@ -55,12 +58,15 @@ spring_shop/
 
 - **spring-shop-common**：跨模块共享的公共代码，**禁止出现业务逻辑**，只放通用能力（统一响应、异常、配置、工具类、通用枚举等）。
 - **spring-shop-user**：用户业务模块（注册、登录、JWT 认证适配），依赖 common。
+- **spring-shop-product**：商品业务模块（分类、SPU/SKU/图片、前后台商品读写、库存扣减），依赖 common。
+- **spring-shop-cart**：购物车业务模块（加购、数量调整、勾选、删除），复用 product 的只读查询，依赖 common + product。
+- **spring-shop-order**：订单业务模块（收货地址、下单快照、条件扣库存、状态流转、后台发货），依赖 common + product + cart。
 - **spring-shop-admin**：管理后台业务模块（管理员认证、RBAC 权限中心、操作审计），依赖 common。
 - **spring-shop-web**：应用启动模块，含启动类、控制器、安全配置（前后台双过滤链）与配置文件，统一依赖所有业务模块。
 
 ### 新增业务模块约定
 
-新增业务模块时（如 `spring-shop-user`、`spring-shop-order`），应遵循：
+新增业务模块时（如 `spring-shop-pay`、`spring-shop-coupon`），应遵循：
 
 1. 在父 POM 的 `<modules>` 中注册，并在 `<dependencyManagement>` 中声明版本。
 2. 模块内部按 `controller / service / mapper / entity / dto / vo` 分层组织包。
@@ -254,7 +260,7 @@ curl http://localhost:6001/api/health
 1. **先读后改**：修改任何文件前，先阅读目标文件及相关上下文。
 2. **小步提交**：一个功能一个改动，保持 diff 聚焦。
 3. **保持风格一致**：新代码遵循本文件与现有代码风格。
-4. **学习导向**：作为学习项目，代码中可保留适度注释解释「为什么这样做」，方便复习。
+4. **注释到位**：复杂业务逻辑在关键步骤保留注释解释「为什么这样做」，降低长期维护成本。
 5. **测试跟随**：新功能/修复必须附带测试（Service 层单元测试 + 必要的接口集成测试），提交前保证 `mvn test` 全绿。
 
 ### 分支与合并（多人协作）
