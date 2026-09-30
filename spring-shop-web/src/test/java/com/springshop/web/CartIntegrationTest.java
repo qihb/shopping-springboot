@@ -30,6 +30,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -150,6 +151,89 @@ class CartIntegrationTest {
         assertEquals(2014, json.get("code").asInt());
     }
 
+    @Test
+    void update_quantity_and_checked_then_select_all_should_work() throws Exception {
+        String token = loginAndGetToken("cart_user_5");
+        addItem(token, createSku(1, 1, 10), 2);
+        Long itemId = cartItems(token).get(0).get("id").asLong();
+
+        // 改数量：2 -> 5
+        mockMvc.perform(put("/api/cart/items/" + itemId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("quantity", 5))))
+                .andExpect(status().isOk());
+
+        // 取消单条勾选
+        mockMvc.perform(put("/api/cart/items/" + itemId + "/checked")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("checked", false))))
+                .andExpect(status().isOk());
+
+        JsonNode item = cartItems(token).get(0);
+        assertEquals(5, item.get("quantity").asInt());
+        assertEquals(false, item.get("checked").asBoolean());
+
+        // 全选后恢复勾选
+        mockMvc.perform(put("/api/cart/checked")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("checked", true))))
+                .andExpect(status().isOk());
+
+        assertEquals(true, cartItems(token).get(0).get("checked").asBoolean());
+    }
+
+    @Test
+    void update_quantity_with_illegal_value_should_be_rejected() throws Exception {
+        String token = loginAndGetToken("cart_user_6");
+        addItem(token, createSku(1, 1, 10), 2);
+        Long itemId = cartItems(token).get(0).get("id").asLong();
+
+        JsonNode json = readJson(mockMvc.perform(put("/api/cart/items/" + itemId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("quantity", 0))))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertEquals(400, json.get("code").asInt());
+    }
+
+    @Test
+    void delete_checked_should_only_remove_checked_items() throws Exception {
+        String token = loginAndGetToken("cart_user_7");
+        addItem(token, createSku(1, 1, 10), 1);
+        addItem(token, createSku(1, 1, 10), 1);
+
+        // 列表按 id 倒序，index 1 是较早加入的条目；取消其勾选后它应被保留
+        Long keptId = cartItems(token).get(1).get("id").asLong();
+        mockMvc.perform(put("/api/cart/items/" + keptId + "/checked")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("checked", false))))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete("/api/cart/checked").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+
+        JsonNode remaining = cartItems(token);
+        assertEquals(1, remaining.size());
+        assertEquals(keptId.longValue(), remaining.get(0).get("id").asLong());
+    }
+
+    @Test
+    void clear_should_remove_all_items() throws Exception {
+        String token = loginAndGetToken("cart_user_8");
+        addItem(token, createSku(1, 1, 10), 1);
+        addItem(token, createSku(1, 1, 10), 2);
+
+        mockMvc.perform(delete("/api/cart").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+
+        assertEquals(0, cartItems(token).size());
+    }
+
     /**
      * 注册并登录，返回可用的前台 token
      */
@@ -200,5 +284,15 @@ class CartIntegrationTest {
 
     private JsonNode readJson(MvcResult result) throws Exception {
         return objectMapper.readTree(result.getResponse().getContentAsByteArray());
+    }
+
+    /**
+     * 读取当前用户购物车条目数组
+     */
+    private JsonNode cartItems(String token) throws Exception {
+        return readJson(mockMvc.perform(get("/api/cart")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn()).get("data").get("items");
     }
 }

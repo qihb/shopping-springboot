@@ -16,6 +16,7 @@ import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -58,37 +59,38 @@ public class CartServiceImpl implements CartService {
     public void add(Long userId, CartAddRequest request) {
         validateQuantity(request.getQuantity());
 
-        ProductSku sku = productSkuMapper.selectById(request.getSkuId());
-        if (sku == null) {
-            throw new BusinessException(ResultCode.PRODUCT_SKU_NOT_FOUND);
-        }
-        if (!Objects.equals(sku.getStatus(), 1)) {
-            throw new BusinessException(ResultCode.CART_SKU_DISABLED);
-        }
-        Product product = productMapper.selectById(sku.getProductId());
-        if (product == null || !Objects.equals(product.getStatus(), 1)) {
-            throw new BusinessException(ResultCode.PRODUCT_OFF_SHELF);
-        }
+        ProductSku sku = requireOnSaleSku(request.getSkuId());
 
         CartItem existing = findItem(userId, request.getSkuId());
-        // 同 SKU 已存在则累加，并按加购语义自动勾选
-        int targetQuantity = request.getQuantity() + (existing == null ? 0 : existing.getQuantity());
-        if (sku.getStock() != null && targetQuantity > sku.getStock()) {
-            throw new BusinessException(ResultCode.CART_STOCK_INSUFFICIENT);
-        }
-
         if (existing == null) {
+            if (sku.getStock() != null && request.getQuantity() > sku.getStock()) {
+                throw new BusinessException(ResultCode.CART_STOCK_INSUFFICIENT);
+            }
             CartItem item = new CartItem();
             item.setUserId(userId);
             item.setSkuId(request.getSkuId());
             item.setQuantity(request.getQuantity());
             item.setChecked(1);
-            cartItemMapper.insert(item);
-        } else {
-            existing.setQuantity(targetQuantity);
-            existing.setChecked(1);
-            cartItemMapper.updateById(existing);
+            try {
+                cartItemMapper.insert(item);
+                return;
+            } catch (DuplicateKeyException e) {
+                // 并发窗口：查询与插入之间另一请求已写入同一 SKU，退化为累加，避免唯一键冲突冒泡为系统异常
+                existing = findItem(userId, request.getSkuId());
+                if (existing == null) {
+                    throw e;
+                }
+            }
         }
+
+        // 同 SKU 已存在则累加，并按加购语义自动勾选
+        int targetQuantity = request.getQuantity() + existing.getQuantity();
+        if (sku.getStock() != null && targetQuantity > sku.getStock()) {
+            throw new BusinessException(ResultCode.CART_STOCK_INSUFFICIENT);
+        }
+        existing.setQuantity(targetQuantity);
+        existing.setChecked(1);
+        cartItemMapper.updateById(existing);
     }
 
     @Override
@@ -140,8 +142,9 @@ public class CartServiceImpl implements CartService {
         validateQuantity(request.getQuantity());
         CartItem item = requireOwnedItem(userId, id);
 
-        ProductSku sku = productSkuMapper.selectById(item.getSkuId());
-        if (sku != null && sku.getStock() != null && request.getQuantity() > sku.getStock()) {
+        // 与加购保持一致的校验强度：失效 SKU / 下架商品不允许改数量
+        ProductSku sku = requireOnSaleSku(item.getSkuId());
+        if (sku.getStock() != null && request.getQuantity() > sku.getStock()) {
             throw new BusinessException(ResultCode.CART_STOCK_INSUFFICIENT);
         }
         item.setQuantity(request.getQuantity());
@@ -157,9 +160,32 @@ public class CartServiceImpl implements CartService {
 
     @Override
     public void updateAllChecked(Long userId, CartCheckedRequest request) {
+        boolean checked = Boolean.TRUE.equals(request.getChecked());
+        List<CartItem> items = cartItemMapper.selectList(new LambdaQueryWrapper<CartItem>()
+                .eq(CartItem::getUserId, userId));
+        if (items.isEmpty()) {
+            return;
+        }
+
+        List<Long> targetIds;
+        if (checked) {
+            // 全选只作用于有效条目，失效条目不参与勾选（仍保留在列表中由用户自行删除）
+            Map<Long, ProductSku> skuMap = collectSkus(items);
+            Map<Long, Product> productMap = collectProducts(skuMap.values());
+            targetIds = items.stream()
+                    .filter(item -> isItemValid(item, skuMap, productMap))
+                    .map(CartItem::getId)
+                    .toList();
+        } else {
+            targetIds = items.stream().map(CartItem::getId).toList();
+        }
+        if (targetIds.isEmpty()) {
+            return;
+        }
         cartItemMapper.update(null, new LambdaUpdateWrapper<CartItem>()
                 .eq(CartItem::getUserId, userId)
-                .set(CartItem::getChecked, Boolean.TRUE.equals(request.getChecked()) ? 1 : 0));
+                .in(CartItem::getId, targetIds)
+                .set(CartItem::getChecked, checked ? 1 : 0));
     }
 
     @Override
@@ -207,8 +233,38 @@ public class CartServiceImpl implements CartService {
         return item;
     }
 
+    /**
+     * 校验 SKU 处于可购买状态：SKU 存在（2011）、规格在售（3004）、所属商品在售（2014），返回 SKU
+     */
+    private ProductSku requireOnSaleSku(Long skuId) {
+        ProductSku sku = productSkuMapper.selectById(skuId);
+        if (sku == null) {
+            throw new BusinessException(ResultCode.PRODUCT_SKU_NOT_FOUND);
+        }
+        if (!Objects.equals(sku.getStatus(), 1)) {
+            throw new BusinessException(ResultCode.CART_SKU_DISABLED);
+        }
+        Product product = productMapper.selectById(sku.getProductId());
+        if (product == null || !Objects.equals(product.getStatus(), 1)) {
+            throw new BusinessException(ResultCode.PRODUCT_OFF_SHELF);
+        }
+        return sku;
+    }
+
     private boolean isChecked(CartItem item) {
         return item.getChecked() != null && item.getChecked() == 1;
+    }
+
+    /**
+     * 判断条目是否有效：SKU 存在且在售、所属商品存在且在售
+     */
+    private boolean isItemValid(CartItem item, Map<Long, ProductSku> skuMap, Map<Long, Product> productMap) {
+        ProductSku sku = skuMap.get(item.getSkuId());
+        if (sku == null || !Objects.equals(sku.getStatus(), 1)) {
+            return false;
+        }
+        Product product = productMap.get(sku.getProductId());
+        return product != null && Objects.equals(product.getStatus(), 1);
     }
 
     private Map<Long, ProductSku> collectSkus(List<CartItem> items) {

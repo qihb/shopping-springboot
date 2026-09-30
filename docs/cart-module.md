@@ -86,8 +86,9 @@ spring-shop-cart/
 - **add**：依次校验 数量合法（3002）→ SKU 存在（2011）→ SKU 启用（3004）→ 商品在售（2014）→ 累加后是否超库存（3003）。
   - `targetQuantity = 本次数量 + 已存在数量`，超 `sku.stock` 即拒绝。
   - 不存在则 insert（`checked=1`），已存在则累加并置 `checked=1`。
-- **updateQuantity**：校验数量合法（3002）→ 条目归属（3001）→ 超库存校验（3003，SKU 已删除时跳过）。
-- **updateChecked / updateAllChecked**：单条走 `updateById`；全选走一条 `LambdaUpdateWrapper` 批量 UPDATE。
+  - **并发兜底**：insert 捕获 `DuplicateKeyException`（唯一键 `uk_user_sku` 冲突）后重查并退化为累加，避免并发加购同一 SKU 冒泡为系统异常。
+- **updateQuantity**：校验数量合法（3002）→ 条目归属（3001）→ SKU 可购买性（2011/3004/2014，与 add 同强度）→ 超库存校验（3003）。
+- **updateChecked / updateAllChecked**：单条走 `updateById`；全选先查全部条目，`checked=true` 时先过滤掉失效条目再按 id 集合批量 UPDATE（`checked=false` 时不做过滤）。
 - **delete / deleteChecked / clear**：删除前校验归属；批量删除走 `LambdaQueryWrapper` 条件删除（非逻辑删除）。
 
 ### 6.2 越权防护
@@ -108,10 +109,10 @@ spring-shop-cart/
 
 ### 7.1 单元测试
 
-[CartServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-cart/src/test/java/com/springshop/cart/service/impl/CartServiceImplTest.java)（22 用例，纯 Mockito，无需 Spring / MySQL / Redis）：
+[CartServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-cart/src/test/java/com/springshop/cart/service/impl/CartServiceImplTest.java)（27 用例，纯 Mockito，无需 Spring / MySQL / Redis）：
 
-- 写：加购新增 / 已存在累加并勾选 / SKU 不存在 / 商品下架 / 规格停售 / 库存不足 / 累加后超库存；
-- 改：数量非法 / 条目不存在 / 库存不足 / 正常更新；勾选更新 / 条目不存在；全选批量更新；
+- 写：加购新增 / 已存在累加并勾选 / **并发唯一键冲突退化为累加** / SKU 不存在 / 商品下架 / 规格停售 / 库存不足 / 累加后超库存；
+- 改：数量非法 / 条目不存在 / 库存不足 / SKU 已删 / 规格停售 / 正常更新；勾选更新 / 条目不存在；全选仅勾选有效条目 / 全不选 / 全部失效时不产生更新；
 - 删：条目不存在 / 越权（他人条目）不删 / 正常删除；删除已勾选 / 清空；
 - 读：空车汇总为 0 / 聚合（商品名、小计、总数、勾选数、勾选金额、失效标记）/ SKU 被删标记失效。
 
@@ -119,13 +120,17 @@ spring-shop-cart/
 
 ### 7.2 集成测试
 
-[CartIntegrationTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/test/java/com/springshop/web/CartIntegrationTest.java)（5 用例，H2 + Flyway `db/migration-test`）：
+[CartIntegrationTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/test/java/com/springshop/web/CartIntegrationTest.java)（9 用例，H2 + Flyway `db/migration-test`）：
 
 - `cart_should_require_login`：未登录访问 `/api/cart` → 401；
 - `add_then_list_should_return_item`：注册登录 → 加购 → 列表返回商品名/数量/小计/汇总；
 - `add_same_sku_twice_should_accumulate`：重复加购同 SKU 数量累加；
 - `delete_then_add_same_sku_should_succeed`：**物理删除决策的守门测试**；
-- `add_off_shelf_product_should_return_off_shelf`：加购下架商品 → 2014。
+- `add_off_shelf_product_should_return_off_shelf`：加购下架商品 → 2014；
+- `update_quantity_and_checked_then_select_all_should_work`：改数量 / 单条勾选 / 全选链路；
+- `update_quantity_with_illegal_value_should_be_rejected`：数量 0 → 参数校验 400；
+- `delete_checked_should_only_remove_checked_items`：删除已勾选只删被勾选条目；
+- `clear_should_remove_all_items`：清空购物车。
 
 集成测试通过 Mapper 直接插入 `product` / `product_sku` 造数，类头满足「四件套」：`@SpringBootTest` + `@AutoConfigureMockMvc` + `@ActiveProfiles("test")` + `@Transactional` + `@MockBean StringRedisTemplate`。
 
@@ -146,9 +151,10 @@ mvn clean verify
 
 1. **角标计数接口**：`GET /api/cart/count` 供导航栏显示件数。
 2. **失效条目自动清理**：可由定时任务或进入购物车时惰性清理。
-3. **加购并发去重**：当前「先查后写」存在并发窗口，可捕获唯一键冲突兜底转为累加。
-4. **Redis 缓存**：购物车读多写少，可将 `cart:{userId}` 放 Redis（Hash），落库异步化。
-5. **价格变动提示**：列表返回「加入时价格 / 当前价格」对比，提示用户价格变化。
+3. **Redis 缓存**：购物车读多写少，可将 `cart:{userId}` 放 Redis（Hash），落库异步化。
+4. **价格变动提示**：列表返回「加入时价格 / 当前价格」对比，提示用户价格变化。
+
+> 已落地：加购并发兜底（insert 捕获唯一键冲突退化为累加）、updateQuantity 与 add 同强度校验、全选跳过失效条目、接口集成测试补全。
 
 ## 九、关键修改文件一览
 

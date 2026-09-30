@@ -26,6 +26,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -158,6 +159,25 @@ class CartServiceImplTest {
     }
 
     @Test
+    void add_should_accumulate_when_concurrent_insert_conflicts() {
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 10));
+        when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
+        // 首次查询为空 → 走 insert；insert 抛唯一键冲突后重查能拿到并发写入的行
+        when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(null)
+                .thenReturn(cartItem(9L, 10L, 3, 0));
+        when(cartItemMapper.insert(any(CartItem.class)))
+                .thenThrow(new DuplicateKeyException("uk_user_sku"));
+
+        cartService.add(USER_ID, addRequest(10L, 2));
+
+        ArgumentCaptor<CartItem> captor = ArgumentCaptor.forClass(CartItem.class);
+        verify(cartItemMapper).updateById(captor.capture());
+        assertEquals(5, captor.getValue().getQuantity());
+        assertEquals(1, captor.getValue().getChecked());
+    }
+
+    @Test
     void updateQuantity_should_fail_when_item_not_found() {
         when(cartItemMapper.selectById(9L)).thenReturn(null);
 
@@ -177,6 +197,7 @@ class CartServiceImplTest {
     void updateQuantity_should_fail_when_stock_insufficient() {
         when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
         when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 2));
+        when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> cartService.updateQuantity(USER_ID, 9L, quantityRequest(5)));
@@ -184,9 +205,30 @@ class CartServiceImplTest {
     }
 
     @Test
+    void updateQuantity_should_fail_when_sku_disabled() {
+        when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 0, 10));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> cartService.updateQuantity(USER_ID, 9L, quantityRequest(2)));
+        assertEquals(ResultCode.CART_SKU_DISABLED.getCode(), ex.getCode());
+    }
+
+    @Test
+    void updateQuantity_should_fail_when_sku_deleted() {
+        when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
+        when(productSkuMapper.selectById(10L)).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> cartService.updateQuantity(USER_ID, 9L, quantityRequest(2)));
+        assertEquals(ResultCode.PRODUCT_SKU_NOT_FOUND.getCode(), ex.getCode());
+    }
+
+    @Test
     void updateQuantity_should_update_when_ok() {
         when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
         when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 10));
+        when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
 
         cartService.updateQuantity(USER_ID, 9L, quantityRequest(4));
 
@@ -246,10 +288,45 @@ class CartServiceImplTest {
     }
 
     @Test
-    void updateAllChecked_should_update_all_items_of_user() {
+    void updateAllChecked_should_uncheck_all_items() {
+        when(cartItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                cartItem(1L, 10L, 2, 1),
+                cartItem(2L, 11L, 1, 1)
+        ));
+
+        cartService.updateAllChecked(USER_ID, checkedRequest(false));
+
+        verify(cartItemMapper).update(isNull(), any());
+    }
+
+    @Test
+    void updateAllChecked_should_check_valid_items() {
+        when(cartItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                cartItem(1L, 10L, 2, 0),
+                cartItem(2L, 12L, 1, 0)
+        ));
+        when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                skuWithPrice(10L, 100L, 1, 10, "10.00"),
+                skuWithPrice(12L, 100L, 0, 10, "8.00")
+        ));
+        when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
+
         cartService.updateAllChecked(USER_ID, checkedRequest(true));
 
         verify(cartItemMapper).update(isNull(), any());
+    }
+
+    @Test
+    void updateAllChecked_should_skip_update_when_all_items_invalid() {
+        when(cartItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                cartItem(1L, 10L, 2, 0)
+        ));
+        // SKU 已被删除 → 唯一条目也是失效条目，全选不应产生任何更新
+        when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+
+        cartService.updateAllChecked(USER_ID, checkedRequest(true));
+
+        verify(cartItemMapper, never()).update(any(), any());
     }
 
     @Test
