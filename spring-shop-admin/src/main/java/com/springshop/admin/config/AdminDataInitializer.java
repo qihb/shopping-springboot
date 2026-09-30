@@ -28,7 +28,7 @@ import java.util.List;
  * <p>首次启动（admin_user / role / menu 均为空）时创建初始数据：
  * <ul>
  *   <li>超级管理员：admin / admin123（密码 BCrypt 加密，上线后务必修改）；</li>
- *   <li>ADMIN 超级角色 + 系统管理基础菜单；</li>
+ *   <li>ADMIN 超级角色 + 系统管理 / 商品管理 / 订单管理基础菜单；</li>
  *   <li>为 admin 绑定 ADMIN 角色并授予全部菜单。</li>
  * </ul>
  * 幂等：表非空时跳过，不会重复插入。
@@ -103,7 +103,8 @@ public class AdminDataInitializer implements ApplicationRunner {
     }
 
     /**
-     * 基础菜单树：系统管理（目录）→ 角色管理 / 菜单管理（菜单）+ 按钮级权限
+     * 基础菜单树：系统管理（目录）→ 角色管理 / 菜单管理（菜单）+ 按钮级权限，
+     * 以及商品管理、订单管理目录及其菜单与按钮级权限
      */
     private List<Menu> buildMenus(MenuMapper menuMapper) {
         List<Menu> menus = new ArrayList<>();
@@ -128,6 +129,10 @@ public class AdminDataInitializer implements ApplicationRunner {
         Menu productMgmt = insertMenu(menuMapper, "商品管理", 2, product.getId(), "/product/list", "product:product:list", null, 2, menus);
         insertMenu(menuMapper, "新增商品", 3, productMgmt.getId(), null, "product:product:create", null, 1, menus);
         insertMenu(menuMapper, "修改商品", 3, productMgmt.getId(), null, "product:product:update", null, 2, menus);
+
+        Menu order = insertMenu(menuMapper, "订单管理", 1, 0L, "/order", "order", "List", 3, menus);
+        Menu orderList = insertMenu(menuMapper, "订单列表", 2, order.getId(), "/order/list", "order:order:list", null, 1, menus);
+        insertMenu(menuMapper, "订单发货", 3, orderList.getId(), null, "order:order:ship", null, 1, menus);
 
         return menus;
     }
