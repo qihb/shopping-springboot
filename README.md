@@ -37,6 +37,8 @@ spring-shop
 │                        （角色管理、菜单管理）、操作审计（AOP 落库）
 ├── spring-shop-product  商品模块：分类、SPU/SKU/图片，前后台列表与详情（读服务聚合）
 ├── spring-shop-cart     购物车模块：加购、改数量、勾选、删除与购物车列表（能力复用 product）
+├── spring-shop-order    订单模块：收货地址、购物车勾选项下单（快照 + 扣库存）、
+│                        订单状态流转（支付/取消/确认收货）、后台发货
 └── spring-shop-web      启动模块：SpringBoot 启动类、控制器、Spring Security 双过滤链配置、配置文件
 ```
 
@@ -65,9 +67,9 @@ spring-shop
 | 管理后台 | 管理员认证（失败锁定 + 黑名单）、RBAC 权限中心、角色/菜单管理、操作审计 | ✅ 已完成 |
 | 商品模块 | 分类、商品列表、商品详情（SPU/SKU） | ✅ 已完成 |
 | 购物车模块 | 加购、修改数量、勾选结算、清空 | ✅ 已完成 |
-| 订单模块 | 收货地址、下单、订单状态流转 | ⏳ 待开发（表结构已就绪） |
+| 订单模块 | 收货地址、下单、订单状态流转 | ✅ 已完成 |
 
-> 数据库表结构已通过 Flyway 迁移脚本完成设计（V1~V3），含逻辑删除、乐观锁、订单快照等电商通用设计。
+> 数据库表结构已通过 Flyway 迁移脚本完成设计（V1~V4），含逻辑删除、乐观锁、订单快照等电商通用设计。
 
 ## 项目启动
 
@@ -164,4 +166,5 @@ curl http://localhost:6001/api/user/me \
 - [docs/admin-module.md](docs/admin-module.md) — 管理后台技术梳理（双过滤链、RBAC、Redis 登录加固、操作审计、架构取舍）
 - [docs/product-module.md](docs/product-module.md) — 商品模块技术梳理（SPU/SKU 模型、读写服务、分类树、测试基座）
 - [docs/cart-module.md](docs/cart-module.md) — 购物车模块技术梳理（物理删除决策、N+1 聚合、失效标记、测试基座）
+- [docs/order-module.md](docs/order-module.md) — 订单模块技术梳理（下单时序、库存条件扣减、快照设计、订单状态机）
 - [docs/collaboration-plan.md](docs/collaboration-plan.md) — 基础框架评估与多人协作方案
