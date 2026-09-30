@@ -34,6 +34,14 @@ public enum ResultCode {
     CART_STOCK_INSUFFICIENT(3003, "库存不足"),
     CART_SKU_DISABLED(3004, "该规格已停售"),
 
+    // 业务码：订单模块（4000 段）
+    ORDER_ADDRESS_NOT_FOUND(4001, "收货地址不存在"),
+    ORDER_CART_EMPTY(4002, "请先勾选要下单的商品"),
+    ORDER_SKU_UNAVAILABLE(4003, "商品已下架或规格已停售"),
+    ORDER_STOCK_INSUFFICIENT(4004, "商品库存不足"),
+    ORDER_NOT_FOUND(4005, "订单不存在"),
+    ORDER_STATUS_ILLEGAL(4006, "当前订单状态不支持该操作"),
+
     // 业务码：管理后台模块（5000 段）
     ADMIN_USER_NOT_FOUND(5001, "管理员不存在"),
     ADMIN_PASSWORD_ERROR(5002, "用户名或密码错误"),
