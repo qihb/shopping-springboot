@@ -3,24 +3,32 @@ package com.springshop.user.service.impl;
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.ResultCode;
 import com.springshop.common.security.JwtTokenProvider;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.user.dto.LoginRequest;
 import com.springshop.user.dto.RegisterRequest;
 import com.springshop.user.entity.User;
 import com.springshop.user.mapper.UserMapper;
 import com.springshop.user.vo.LoginResponse;
 import com.springshop.user.vo.UserInfoVO;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.security.crypto.password.PasswordEncoder;
+
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -40,8 +48,21 @@ class UserServiceImplTest {
     @Mock
     private JwtTokenProvider jwtTokenProvider;
 
-    @InjectMocks
+    @Mock
+    private StringRedisTemplate stringRedisTemplate;
+
+    private final ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
+
     private UserServiceImpl userService;
+
+    @BeforeEach
+    void setUp() {
+        // @Value primitive long 无法被 Mockito 注入，手动构造并显式传 token 有效期
+        userService = new UserServiceImpl(userMapper, passwordEncoder, jwtTokenProvider,
+                stringRedisTemplate, 7200000L);
+        // register/getCurrentUser 等用例不触碰 Redis，用 lenient 规避严格模式的 UnnecessaryStubbing
+        lenient().when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+    }
 
     // ---------- 注册 ----------
 
@@ -178,6 +199,69 @@ class UserServiceImplTest {
         assertEquals("爱丽丝", vo.getNickname());
         // VO 不应携带密码
         verify(jwtTokenProvider).generateToken(eq(1L), eq("alice"));
+    }
+
+    @Test
+    void login_shouldThrowWhenLocked() {
+        // 模拟 Redis 中失败计数已达阈值（5 次）
+        when(valueOperations.get(RedisKeys.userLoginFailCount("alice"))).thenReturn("5");
+
+        LoginRequest request = new LoginRequest();
+        request.setUsername("alice");
+        request.setPassword("123456");
+
+        BusinessException e = assertThrows(BusinessException.class, () -> userService.login(request));
+        assertEquals(ResultCode.USER_LOCKED.getCode(), e.getCode());
+        // 锁定期间不应查库验证密码
+        verify(userMapper, never()).selectOne(any());
+    }
+
+    @Test
+    void login_shouldIncreaseFailCountWhenPasswordWrong() {
+        User user = new User();
+        user.setId(1L);
+        user.setUsername("alice");
+        user.setPassword("hash");
+        user.setStatus(1);
+        when(userMapper.selectOne(any())).thenReturn(user);
+        when(passwordEncoder.matches("wrong", "hash")).thenReturn(false);
+        when(valueOperations.get(anyString())).thenReturn(null);
+        when(stringRedisTemplate.opsForValue().increment(RedisKeys.userLoginFailCount("alice"))).thenReturn(1L);
+
+        LoginRequest request = new LoginRequest();
+        request.setUsername("alice");
+        request.setPassword("wrong");
+
+        BusinessException e = assertThrows(BusinessException.class, () -> userService.login(request));
+        assertEquals(ResultCode.PASSWORD_ERROR.getCode(), e.getCode());
+        // 首次失败：计数 +1 并设置锁定窗口
+        verify(stringRedisTemplate.opsForValue()).increment(RedisKeys.userLoginFailCount("alice"));
+        verify(stringRedisTemplate).expire(eq(RedisKeys.userLoginFailCount("alice")), any(Duration.class));
+        // 未登录成功，不应清除失败计数
+        verify(stringRedisTemplate, never()).delete(anyString());
+    }
+
+    @Test
+    void login_shouldClearFailCountOnSuccess() {
+        User user = new User();
+        user.setId(1L);
+        user.setUsername("alice");
+        user.setPassword("hash");
+        user.setStatus(1);
+        when(userMapper.selectOne(any())).thenReturn(user);
+        when(passwordEncoder.matches("123456", "hash")).thenReturn(true);
+        when(valueOperations.get(anyString())).thenReturn(null);
+        when(jwtTokenProvider.generateToken(1L, "alice")).thenReturn("jwt-token");
+
+        LoginRequest request = new LoginRequest();
+        request.setUsername("alice");
+        request.setPassword("123456");
+
+        LoginResponse response = userService.login(request);
+
+        assertEquals("jwt-token", response.getToken());
+        // 登录成功必须清除失败计数
+        verify(stringRedisTemplate).delete(RedisKeys.userLoginFailCount("alice"));
     }
 
     // ---------- 当前用户 ----------
