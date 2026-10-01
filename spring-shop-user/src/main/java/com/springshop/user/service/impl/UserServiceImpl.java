@@ -106,6 +106,13 @@ public class UserServiceImpl implements UserService {
         return convertToVO(user);
     }
 
+    @Override
+    public void logout(String token) {
+        // 黑名单 TTL 与 token 有效期一致，token 自然过期后自动清理
+        stringRedisTemplate.opsForValue().set(
+                RedisKeys.userTokenBlacklist(token), "1", Duration.ofMillis(jwtExpiration));
+    }
+
     /**
      * 实体转 VO：对外只暴露必要字段，不返回密码等敏感信息
      */

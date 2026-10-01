@@ -24,4 +24,9 @@ public interface UserService {
      * 获取当前登录用户信息
      */
     UserInfoVO getCurrentUser(Long userId);
+
+    /**
+     * 退出登录：将 token 加入 Redis 黑名单，实现主动失效
+     */
+    void logout(String token);
 }

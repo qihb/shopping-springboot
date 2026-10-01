@@ -264,6 +264,19 @@ class UserServiceImplTest {
         verify(stringRedisTemplate).delete(RedisKeys.userLoginFailCount("alice"));
     }
 
+    // ---------- 登出 ----------
+
+    @Test
+    void logout_shouldAddTokenToBlacklist() {
+        userService.logout("token-abc");
+
+        // 黑名单 TTL 与 token 有效期一致（测试构造器显式传 7200000L）
+        verify(valueOperations).set(
+                eq(RedisKeys.userTokenBlacklist("token-abc")),
+                eq("1"),
+                eq(Duration.ofMillis(7200000L)));
+    }
+
     // ---------- 当前用户 ----------
 
     @Test
