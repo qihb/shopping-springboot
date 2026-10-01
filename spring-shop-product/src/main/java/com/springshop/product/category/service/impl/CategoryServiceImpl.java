@@ -1,8 +1,12 @@
 package com.springshop.product.category.service.impl;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.ResultCode;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.product.category.dto.CategorySaveRequest;
 import com.springshop.product.category.entity.ProductCategory;
 import com.springshop.product.category.mapper.ProductCategoryMapper;
@@ -11,8 +15,10 @@ import com.springshop.product.category.vo.CategoryNodeVO;
 import com.springshop.product.category.vo.CategoryVO;
 import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.mapper.ProductMapper;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -24,13 +30,25 @@ import java.util.stream.Collectors;
 @Service
 public class CategoryServiceImpl implements CategoryService {
 
+    /** 分类树缓存 TTL */
+    private static final Duration TREE_CACHE_TTL = Duration.ofHours(1);
+
     private final ProductCategoryMapper categoryMapper;
 
     private final ProductMapper productMapper;
 
-    public CategoryServiceImpl(ProductCategoryMapper categoryMapper, ProductMapper productMapper) {
+    private final StringRedisTemplate stringRedisTemplate;
+
+    private final ObjectMapper objectMapper;
+
+    public CategoryServiceImpl(ProductCategoryMapper categoryMapper,
+                               ProductMapper productMapper,
+                               StringRedisTemplate stringRedisTemplate,
+                               ObjectMapper objectMapper) {
         this.categoryMapper = categoryMapper;
         this.productMapper = productMapper;
+        this.stringRedisTemplate = stringRedisTemplate;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -44,6 +62,9 @@ public class CategoryServiceImpl implements CategoryService {
             category.setStatus(1);
         }
         categoryMapper.insert(category);
+
+        // 分类变更后主动失效树缓存
+        stringRedisTemplate.delete(RedisKeys.categoryTree());
     }
 
     @Override
@@ -58,6 +79,9 @@ public class CategoryServiceImpl implements CategoryService {
         }
         apply(category, request);
         categoryMapper.updateById(category);
+
+        // 分类变更后主动失效树缓存
+        stringRedisTemplate.delete(RedisKeys.categoryTree());
     }
 
     @Override
@@ -77,6 +101,9 @@ public class CategoryServiceImpl implements CategoryService {
             throw new BusinessException(ResultCode.PRODUCT_CATEGORY_HAS_PRODUCTS);
         }
         categoryMapper.deleteById(id);
+
+        // 分类变更后主动失效树缓存
+        stringRedisTemplate.delete(RedisKeys.categoryTree());
     }
 
     @Override
@@ -90,6 +117,30 @@ public class CategoryServiceImpl implements CategoryService {
 
     @Override
     public List<CategoryNodeVO> tree() {
+        String cached = stringRedisTemplate.opsForValue().get(RedisKeys.categoryTree());
+        if (cached != null) {
+            try {
+                return objectMapper.readValue(cached, new TypeReference<List<CategoryNodeVO>>() {
+                });
+            } catch (JsonProcessingException e) {
+                // 缓存内容损坏视为未命中，走库重建
+            }
+        }
+
+        List<CategoryNodeVO> tree = buildTree();
+        try {
+            stringRedisTemplate.opsForValue().set(RedisKeys.categoryTree(),
+                    objectMapper.writeValueAsString(tree), TREE_CACHE_TTL);
+        } catch (JsonProcessingException e) {
+            // 序列化失败只影响缓存写入，不影响本次响应
+        }
+        return tree;
+    }
+
+    /**
+     * 从数据库组装分类树（原 tree() 逻辑）
+     */
+    private List<CategoryNodeVO> buildTree() {
         List<CategoryNodeVO> nodes = categoryMapper.selectList(
                         Wrappers.<ProductCategory>lambdaQuery().orderByAsc(ProductCategory::getSort))
                 .stream().map(this::toNode).collect(Collectors.toList());
