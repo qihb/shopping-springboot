@@ -3,9 +3,12 @@ package com.springshop.product.product.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.PageResult;
 import com.springshop.common.result.ResultCode;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.product.category.entity.ProductCategory;
 import com.springshop.product.category.mapper.ProductCategoryMapper;
 import com.springshop.product.product.dto.ProductPageQuery;
@@ -20,10 +23,12 @@ import com.springshop.product.product.vo.ProductDetailVO;
 import com.springshop.product.product.vo.ProductImageVO;
 import com.springshop.product.product.vo.ProductListVO;
 import com.springshop.product.product.vo.ProductSkuVO;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -33,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 /**
@@ -41,19 +47,37 @@ import java.util.stream.Collectors;
 @Service
 public class ProductQueryServiceImpl implements ProductQueryService {
 
+    /** 商品详情缓存基础时长（分钟） */
+    private static final long DETAIL_CACHE_MINUTES = 30;
+
+    /** 缓存 TTL 随机抖动上限（分钟），避免大量 key 同时过期引发雪崩 */
+    private static final long DETAIL_CACHE_JITTER_MINUTES = 5;
+
+    /** 不存在商品的空值缓存时长（秒），防止恶意 id 反复穿透查库 */
+    private static final long NULL_VALUE_CACHE_SECONDS = 60;
+
+    /** 空值缓存占位符 */
+    private static final String NULL_VALUE_MARKER = "NULL";
+
     private final ProductMapper productMapper;
     private final ProductSkuMapper productSkuMapper;
     private final ProductImageMapper productImageMapper;
     private final ProductCategoryMapper categoryMapper;
+    private final StringRedisTemplate stringRedisTemplate;
+    private final ObjectMapper objectMapper;
 
     public ProductQueryServiceImpl(ProductMapper productMapper,
                                    ProductSkuMapper productSkuMapper,
                                    ProductImageMapper productImageMapper,
-                                   ProductCategoryMapper categoryMapper) {
+                                   ProductCategoryMapper categoryMapper,
+                                   StringRedisTemplate stringRedisTemplate,
+                                   ObjectMapper objectMapper) {
         this.productMapper = productMapper;
         this.productSkuMapper = productSkuMapper;
         this.productImageMapper = productImageMapper;
         this.categoryMapper = categoryMapper;
+        this.stringRedisTemplate = stringRedisTemplate;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -83,14 +107,41 @@ public class ProductQueryServiceImpl implements ProductQueryService {
 
     @Override
     public ProductDetailVO appDetail(Long id) {
+        String cacheKey = RedisKeys.productDetail(id);
+        String cached = stringRedisTemplate.opsForValue().get(cacheKey);
+        if (NULL_VALUE_MARKER.equals(cached)) {
+            // 空值缓存命中：商品不存在，直接抛业务异常
+            throw new BusinessException(ResultCode.PRODUCT_NOT_FOUND);
+        }
+        if (cached != null) {
+            try {
+                return objectMapper.readValue(cached, ProductDetailVO.class);
+            } catch (JsonProcessingException e) {
+                // 缓存内容损坏视为未命中，走库重建
+            }
+        }
+
         Product product = productMapper.selectById(id);
         if (product == null) {
+            // 空值短缓存 60s，防止不存在的 id 反复穿透查库
+            stringRedisTemplate.opsForValue().set(cacheKey, NULL_VALUE_MARKER,
+                    Duration.ofSeconds(NULL_VALUE_CACHE_SECONDS));
             throw new BusinessException(ResultCode.PRODUCT_NOT_FOUND);
         }
         if (!Objects.equals(product.getStatus(), 1)) {
             throw new BusinessException(ResultCode.PRODUCT_OFF_SHELF);
         }
-        return buildDetail(product);
+        ProductDetailVO vo = buildDetail(product);
+
+        // TTL 基础 30 分钟 + 随机抖动，避免大量 key 同一时刻集中过期
+        long jitterMinutes = ThreadLocalRandom.current().nextLong(DETAIL_CACHE_JITTER_MINUTES + 1);
+        try {
+            stringRedisTemplate.opsForValue().set(cacheKey, objectMapper.writeValueAsString(vo),
+                    Duration.ofMinutes(DETAIL_CACHE_MINUTES + jitterMinutes));
+        } catch (JsonProcessingException e) {
+            // 序列化失败只影响缓存写入，不影响本次响应
+        }
+        return vo;
     }
 
     private LambdaQueryWrapper<Product> buildProductQueryWrapper(ProductPageQuery query, boolean fixedStatus) {

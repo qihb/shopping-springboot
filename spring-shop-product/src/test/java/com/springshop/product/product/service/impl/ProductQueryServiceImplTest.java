@@ -3,9 +3,11 @@ package com.springshop.product.product.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.PageResult;
 import com.springshop.common.result.ResultCode;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.product.category.entity.ProductCategory;
 import com.springshop.product.category.mapper.ProductCategoryMapper;
 import com.springshop.product.product.dto.ProductPageQuery;
@@ -21,21 +23,31 @@ import com.springshop.product.product.vo.ProductListVO;
 import com.springshop.product.product.vo.ProductSkuVO;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -54,8 +66,21 @@ class ProductQueryServiceImplTest {
     @Mock
     private ProductCategoryMapper categoryMapper;
 
+    @Mock
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Mock
+    private ObjectMapper objectMapper;
+
     @InjectMocks
     private ProductQueryServiceImpl productQueryService;
+
+    @BeforeEach
+    void setUpRedisMocks() {
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> ops = org.mockito.Mockito.mock(ValueOperations.class);
+        org.mockito.Mockito.when(stringRedisTemplate.opsForValue()).thenReturn(ops);
+    }
 
     @BeforeAll
     static void warmupMybatisPlusLambdaCache() {
@@ -95,6 +120,67 @@ class ProductQueryServiceImplTest {
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> productQueryService.appDetail(100L));
         assertEquals(ResultCode.PRODUCT_OFF_SHELF.getCode(), ex.getCode());
+    }
+
+    @Test
+    void appDetail_should_return_cache_when_hit() throws Exception {
+        ProductDetailVO cachedVo = new ProductDetailVO();
+        cachedVo.setId(100L);
+        cachedVo.setName("缓存商品");
+        when(stringRedisTemplate.opsForValue().get(RedisKeys.productDetail(100L))).thenReturn("{\"id\":100}");
+        when(objectMapper.readValue("{\"id\":100}", ProductDetailVO.class)).thenReturn(cachedVo);
+
+        ProductDetailVO vo = productQueryService.appDetail(100L);
+
+        assertEquals("缓存商品", vo.getName());
+        // 缓存命中时不应查库
+        verify(productMapper, never()).selectById(100L);
+    }
+
+    @Test
+    void appDetail_should_query_db_and_fill_cache_when_miss() throws Exception {
+        Product p = buildProduct(100L, 1);
+        when(stringRedisTemplate.opsForValue().get(RedisKeys.productDetail(100L))).thenReturn(null);
+        when(productMapper.selectById(100L)).thenReturn(p);
+        when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        when(productImageMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        when(objectMapper.writeValueAsString(any(ProductDetailVO.class))).thenReturn("{\"id\":100}");
+
+        ProductDetailVO vo = productQueryService.appDetail(100L);
+
+        assertNotNull(vo);
+        // 回填缓存，TTL 基础 30 分钟 + 0~5 分钟随机抖动
+        ArgumentCaptor<Duration> ttlCaptor = ArgumentCaptor.forClass(Duration.class);
+        verify(stringRedisTemplate.opsForValue()).set(
+                eq(RedisKeys.productDetail(100L)), eq("{\"id\":100}"), ttlCaptor.capture());
+        long minutes = ttlCaptor.getValue().toMinutes();
+        assertTrue(minutes >= 30 && minutes <= 35);
+    }
+
+    @Test
+    void appDetail_should_cache_null_marker_when_not_found() {
+        when(stringRedisTemplate.opsForValue().get(RedisKeys.productDetail(999L))).thenReturn(null);
+        when(productMapper.selectById(999L)).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> productQueryService.appDetail(999L));
+        assertEquals(ResultCode.PRODUCT_NOT_FOUND.getCode(), ex.getCode());
+        // 空值短缓存 60s 防穿透
+        verify(stringRedisTemplate.opsForValue()).set(
+                eq(RedisKeys.productDetail(999L)), eq("NULL"), eq(Duration.ofSeconds(60)));
+    }
+
+    @Test
+    void appDetail_should_not_cache_when_off_shelf() {
+        Product p = buildProduct(100L, 0);
+        when(stringRedisTemplate.opsForValue().get(RedisKeys.productDetail(100L))).thenReturn(null);
+        when(productMapper.selectById(100L)).thenReturn(p);
+
+        assertThrows(BusinessException.class, () -> productQueryService.appDetail(100L));
+
+        // 下架商品不写缓存（管理端可能马上重新上架）
+        verify(stringRedisTemplate.opsForValue(), never()).set(anyString(), anyString(),
+                org.mockito.ArgumentMatchers.any(Duration.class));
     }
 
     @Test
