@@ -70,14 +70,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
      */
     private void authenticate(String token, HttpServletRequest request) {
         try {
-            // 只接受前台用户 token，管理员 token 交由后台过滤链处理
+            // 只接受前台用户 token，管理员 token 交由后台过滤链处理；
+            // 注意：本过滤器同时被注册为全局过滤器，会在后台链之后执行，
+            // 这里不能 clearContext，否则会清掉后台链已写入的管理员认证
             if (!JwtTokenProvider.USER_TYPE_USER.equals(jwtTokenProvider.getUserType(token))) {
-                SecurityContextHolder.clearContext();
                 return;
             }
             // 退出登录后的 token 已进黑名单，视为失效
             if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(RedisKeys.userTokenBlacklist(token)))) {
-                SecurityContextHolder.clearContext();
                 return;
             }
             String username = jwtTokenProvider.getUsername(token);

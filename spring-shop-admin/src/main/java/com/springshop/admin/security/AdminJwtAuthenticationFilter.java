@@ -60,18 +60,18 @@ public class AdminJwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     /**
-     * 校验 token 并写入认证上下文；失败时清除上下文（避免前台过滤器已写入的认证误入后台链）
+     * 校验 token 并写入认证上下文；失败时静默跳过（交由授权层返回 401）
      */
     private void authenticate(String token, HttpServletRequest request) {
         try {
-            // 只接受管理员 token，前台用户 token 直接视为未认证
+            // 只接受管理员 token，前台用户 token 直接视为未认证；
+            // 注意：本过滤器同时被注册为全局过滤器，会在前台链之后执行，
+            // 这里不能 clearContext，否则会清掉前台链已写入的用户认证
             if (!JwtTokenProvider.USER_TYPE_ADMIN.equals(jwtTokenProvider.getUserType(token))) {
-                SecurityContextHolder.clearContext();
                 return;
             }
             // 退出登录后的 token 已进黑名单，视为失效
             if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(RedisKeys.adminTokenBlacklist(token)))) {
-                SecurityContextHolder.clearContext();
                 return;
             }
             String username = jwtTokenProvider.getUsername(token);
