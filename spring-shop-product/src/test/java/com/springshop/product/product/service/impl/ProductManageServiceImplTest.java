@@ -3,12 +3,14 @@ package com.springshop.product.product.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.ResultCode;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.product.category.entity.ProductCategory;
 import com.springshop.product.category.mapper.ProductCategoryMapper;
 import com.springshop.product.product.dto.ProductSaveRequest;
 import com.springshop.product.product.dto.ProductSkuItem;
 import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
+import com.springshop.product.product.mapper.ProductImageMapper;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
 import com.springshop.product.product.service.ProductManageService;
@@ -18,6 +20,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.math.BigDecimal;
 import java.util.Collections;
@@ -28,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -43,6 +47,12 @@ class ProductManageServiceImplTest {
 
     @Mock
     private ProductCategoryMapper categoryMapper;
+
+    @Mock
+    private ProductImageMapper productImageMapper;
+
+    @Mock
+    private StringRedisTemplate stringRedisTemplate;
 
     @InjectMocks
     private ProductManageServiceImpl productManageService;
@@ -111,6 +121,47 @@ class ProductManageServiceImplTest {
                 () -> productManageService.updateStatus(999L, 0));
 
         assertEquals(ResultCode.PRODUCT_NOT_FOUND.getCode(), ex.getCode());
+    }
+
+    @Test
+    void update_should_evict_detail_cache() {
+        ProductSaveRequest request = buildCreateRequest();
+        Product product = new Product();
+        product.setId(100L);
+        when(productMapper.selectById(100L)).thenReturn(product);
+        when(categoryMapper.selectById(1L)).thenReturn(new ProductCategory());
+        when(productSkuMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
+        when(productSkuMapper.insert(any(ProductSku.class))).thenReturn(1);
+        productManageService.update(100L, request);
+
+        verify(stringRedisTemplate).delete(RedisKeys.productDetail(100L));
+    }
+
+    @Test
+    void updateStatus_should_evict_detail_cache() {
+        Product product = new Product();
+        product.setId(100L);
+        when(productMapper.selectById(100L)).thenReturn(product);
+        productManageService.updateStatus(100L, 0);
+
+        verify(stringRedisTemplate).delete(RedisKeys.productDetail(100L));
+    }
+
+    @Test
+    void create_should_not_evict_detail_cache() {
+        ProductSaveRequest request = buildCreateRequest();
+        when(categoryMapper.selectById(1L)).thenReturn(new ProductCategory());
+        when(productSkuMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
+        when(productMapper.insert(any(Product.class))).thenAnswer(invocation -> {
+            Product p = invocation.getArgument(0);
+            p.setId(100L);
+            return 1;
+        });
+        when(productSkuMapper.insert(any(ProductSku.class))).thenReturn(1);
+        productManageService.create(request);
+
+        // 新商品不可能有旧缓存，不执行 DEL
+        verify(stringRedisTemplate, never()).delete(anyString());
     }
 
     private ProductSaveRequest buildCreateRequest() {

@@ -3,6 +3,7 @@ package com.springshop.product.product.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.ResultCode;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.product.category.entity.ProductCategory;
 import com.springshop.product.category.mapper.ProductCategoryMapper;
 import com.springshop.product.product.dto.ProductImageItem;
@@ -15,6 +16,7 @@ import com.springshop.product.product.mapper.ProductImageMapper;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
 import com.springshop.product.product.service.ProductManageService;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,15 +35,18 @@ public class ProductManageServiceImpl implements ProductManageService {
     private final ProductSkuMapper productSkuMapper;
     private final ProductImageMapper productImageMapper;
     private final ProductCategoryMapper categoryMapper;
+    private final StringRedisTemplate stringRedisTemplate;
 
     public ProductManageServiceImpl(ProductMapper productMapper,
                                     ProductSkuMapper productSkuMapper,
                                     ProductImageMapper productImageMapper,
-                                    ProductCategoryMapper categoryMapper) {
+                                    ProductCategoryMapper categoryMapper,
+                                    StringRedisTemplate stringRedisTemplate) {
         this.productMapper = productMapper;
         this.productSkuMapper = productSkuMapper;
         this.productImageMapper = productImageMapper;
         this.categoryMapper = categoryMapper;
+        this.stringRedisTemplate = stringRedisTemplate;
     }
 
     @Override
@@ -75,6 +80,9 @@ public class ProductManageServiceImpl implements ProductManageService {
 
         saveSkus(id, request.getSkus(), false);
         saveImages(id, request.getImages(), false);
+
+        // 商品变更后主动失效详情缓存
+        stringRedisTemplate.delete(RedisKeys.productDetail(id));
     }
 
     @Override
@@ -86,6 +94,9 @@ public class ProductManageServiceImpl implements ProductManageService {
         }
         product.setStatus(status);
         productMapper.updateById(product);
+
+        // 上下架变更后主动失效详情缓存
+        stringRedisTemplate.delete(RedisKeys.productDetail(id));
     }
 
     private void validateSkusNotEmpty(ProductSaveRequest request) {
