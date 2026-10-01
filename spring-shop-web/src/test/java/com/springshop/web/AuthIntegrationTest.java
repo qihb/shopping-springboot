@@ -170,6 +170,44 @@ class AuthIntegrationTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void login_locked_whenFailCountReachesThreshold() throws Exception {
+        register("alice");
+        // mock 的 increment 不会真实累加，直接模拟 Redis 中计数已达阈值
+        Mockito.when(valueOperations.get("user:login:fail:alice")).thenReturn("5");
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"alice\",\"password\":\"123456\"}"))
+                .andExpect(status().isOk())
+                .andExpect(result -> {
+                    JsonNode json = objectMapper.readTree(result.getResponse().getContentAsString());
+                    assertEquals(1005, json.get("code").asInt());
+                });
+    }
+
+    @Test
+    void logout_thenTokenInvalid() throws Exception {
+        register("alice");
+        String loginBody = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"alice\",\"password\":\"123456\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String token = objectMapper.readTree(loginBody).get("data").get("token").asText();
+
+        // 登出：token 进入黑名单
+        mockMvc.perform(post("/api/auth/logout")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+
+        // 已登出 token 访问受保护接口被黑名单拦截，返回 401
+        Mockito.when(stringRedisTemplate.hasKey("user:token:blacklist:" + token)).thenReturn(true);
+        mockMvc.perform(get("/api/user/me")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+    }
+
     /**
      * 注册辅助方法：仅断言注册成功
      */
