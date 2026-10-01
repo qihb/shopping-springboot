@@ -158,6 +158,8 @@ curl http://localhost:6001/api/user/me \
 ```
 
 > 提示：当前仅使用本机开发数据库，连接账号（`root`）仅用于本地调试，请勿在生产环境复用。
+>
+> 完整的测试账号、数据库连接信息与种子数据说明已备份至 [docs/test-accounts.md](docs/test-accounts.md)。
 
 ## 相关文档
 
@@ -168,3 +170,4 @@ curl http://localhost:6001/api/user/me \
 - [docs/cart-module.md](docs/cart-module.md) — 购物车模块技术梳理（物理删除决策、N+1 聚合、失效标记、测试基座）
 - [docs/order-module.md](docs/order-module.md) — 订单模块技术梳理（下单时序、库存条件扣减、快照设计、订单状态机）
 - [docs/collaboration-plan.md](docs/collaboration-plan.md) — 基础框架评估与多人协作方案
+- [docs/test-accounts.md](docs/test-accounts.md) — 测试账号与本地环境信息备份（数据库连接、前后台账号、seed 数据）
