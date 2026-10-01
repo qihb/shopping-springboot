@@ -1,12 +1,14 @@
 package com.springshop.web.security;
 
 import com.springshop.common.security.JwtTokenProvider;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.common.security.UserContext;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -22,6 +24,7 @@ import java.io.IOException;
  * JWT 认证过滤器：每个请求只执行一次，负责从请求头解析 token 并完成认证
  *
  * <p>处理流程：
+ * 0. 仅接受 userType=USER 的 token，且校验 Redis 黑名单（登出主动失效）；
  * 1. 读取 {@code Authorization: Bearer <token>} 请求头；
  * 2. 验签解析出用户名，加载用户信息；
  * 3. 构造认证对象写入 {@link SecurityContextHolder}（Spring Security 由此判定已登录）；
@@ -36,11 +39,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtTokenProvider jwtTokenProvider;
     private final UserDetailsService userDetailsService;
+    private final StringRedisTemplate stringRedisTemplate;
 
     public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider,
-                                    @Qualifier("userDetailsServiceImpl") UserDetailsService userDetailsService) {
+                                    @Qualifier("userDetailsServiceImpl") UserDetailsService userDetailsService,
+                                    StringRedisTemplate stringRedisTemplate) {
         this.jwtTokenProvider = jwtTokenProvider;
         this.userDetailsService = userDetailsService;
+        this.stringRedisTemplate = stringRedisTemplate;
     }
 
     @Override
@@ -64,6 +70,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
      */
     private void authenticate(String token, HttpServletRequest request) {
         try {
+            // 只接受前台用户 token，管理员 token 交由后台过滤链处理
+            if (!JwtTokenProvider.USER_TYPE_USER.equals(jwtTokenProvider.getUserType(token))) {
+                SecurityContextHolder.clearContext();
+                return;
+            }
+            // 退出登录后的 token 已进黑名单，视为失效
+            if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(RedisKeys.userTokenBlacklist(token)))) {
+                SecurityContextHolder.clearContext();
+                return;
+            }
             String username = jwtTokenProvider.getUsername(token);
             if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
                 UserDetails userDetails = userDetailsService.loadUserByUsername(username);

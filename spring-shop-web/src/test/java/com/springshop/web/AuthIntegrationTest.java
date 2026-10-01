@@ -2,10 +2,16 @@ package com.springshop.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.springshop.common.security.JwtTokenProvider;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
@@ -36,6 +42,21 @@ class AuthIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @MockBean
+    private StringRedisTemplate stringRedisTemplate;
+
+    @SuppressWarnings("unchecked")
+    private final ValueOperations<String, String> valueOperations = Mockito.mock(ValueOperations.class);
+
+    @Autowired
+    private JwtTokenProvider jwtTokenProvider;
+
+    @BeforeEach
+    void setUpRedisMocks() {
+        // 测试环境无 Redis：mock 掉 opsForValue()，避免 login 计数逻辑 NPE（与其他集成测试一致）
+        Mockito.when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+    }
 
     @Test
     void register_shouldSucceed() throws Exception {
@@ -136,6 +157,17 @@ class AuthIntegrationTest {
                     assertEquals(200, json.get("code").asInt());
                     assertEquals("alice", json.get("data").get("username").asText());
                 });
+    }
+
+    @Test
+    void adminToken_shouldBeRejectedByUserChain() throws Exception {
+        // 同名用户：若前台过滤器不校验 token 类型，ADMIN token 将通过认证并返回 200
+        register("alice");
+        String adminToken = jwtTokenProvider.generateToken(1L, "alice", JwtTokenProvider.USER_TYPE_ADMIN);
+
+        mockMvc.perform(get("/api/user/me")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isUnauthorized());
     }
 
     /**
