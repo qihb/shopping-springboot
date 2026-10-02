@@ -89,6 +89,9 @@ public class SecurityConfig {
                         // 白名单：匿名可访问
                         .requestMatchers("/api/auth/**", "/api/health").permitAll()
                         .requestMatchers("/api/categories/tree", "/api/products", "/api/products/**").permitAll()
+                        // 可观测性端点匿名放行：暴露面已由 management.endpoints.web.exposure
+                        // 限定为只读集合（health/info/metrics/prometheus），不含 env/beans 等敏感端点
+                        .requestMatchers("/actuator/**").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/webjars/**").permitAll()
                         // 其余接口必须已认证
                         .anyRequest().authenticated())

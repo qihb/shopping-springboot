@@ -48,6 +48,15 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
+        <!-- 可观测性：Actuator 健康检查与指标端点 + Prometheus 指标格式（版本随 Spring Boot BOM） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <!-- 接口文档：自动生成 OpenAPI 3 文档与 Swagger UI -->
         <dependency>
             <groupId>org.springdoc</groupId>
