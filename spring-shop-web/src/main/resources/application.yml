@@ -54,3 +54,8 @@ jwt:
   secret: ${JWT_SECRET:spring-shop-dev-secret-key-please-change-32bytes}
   # 过期时间（毫秒），默认 2 小时
   expiration: ${JWT_EXPIRATION:7200000}
+
+# 订单超时自动取消：待付款订单超过该分钟数未支付，由定时任务自动取消并回滚库存
+order:
+  timeout:
+    cancel-minutes: 30
