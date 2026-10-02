@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.MediaType;
@@ -68,6 +69,10 @@ class OrderIntegrationTest {
         @SuppressWarnings("unchecked")
         ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        // 购物车列表读走 Redis Hash 缓存：mock 空实现，entries() 默认返回空 map → 走 miss 回源路径
+        @SuppressWarnings("unchecked")
+        HashOperations<String, Object, Object> hashOperations = mock(HashOperations.class);
+        when(stringRedisTemplate.opsForHash()).thenReturn(hashOperations);
     }
 
     @Test

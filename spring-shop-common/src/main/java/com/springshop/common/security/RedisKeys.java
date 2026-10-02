@@ -14,6 +14,7 @@ public final class RedisKeys {
     private static final String USER_TOKEN_BLACKLIST = "user:token:blacklist:";
     private static final String PRODUCT_DETAIL = "product:detail:";
     private static final String CATEGORY_TREE = "category:tree";
+    private static final String CART = "cart:";
 
     private RedisKeys() {
     }
@@ -46,5 +47,10 @@ public final class RedisKeys {
     /** 分类树缓存 key：value 为分类树列表的 JSON 串 */
     public static String categoryTree() {
         return CATEGORY_TREE;
+    }
+
+    /** 购物车缓存 key：Redis Hash 结构，field=skuId，value=条目id|数量|是否勾选（DB 为主存，Redis 仅读加速） */
+    public static String cart(Long userId) {
+        return CART + userId;
     }
 }

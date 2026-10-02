@@ -18,6 +18,7 @@ import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -27,18 +28,26 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.redis.core.HashOperations;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -59,6 +68,12 @@ class CartServiceImplTest {
     @Mock
     private ProductMapper productMapper;
 
+    @Mock
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Mock
+    private HashOperations<String, Object, Object> hashOperations;
+
     @InjectMocks
     private CartServiceImpl cartService;
 
@@ -72,6 +87,12 @@ class CartServiceImplTest {
                 // ignore: 预热失败时由真实运行环境再初始化，单测仅尽力而为
             }
         }
+    }
+
+    @BeforeEach
+    void setUpRedisMocks() {
+        // 购物车缓存依赖 opsForHash，统一 stub 供读/写路径使用
+        when(stringRedisTemplate.<Object, Object>opsForHash()).thenReturn(hashOperations);
     }
 
     // ---------------- 写操作 ----------------
@@ -403,6 +424,184 @@ class CartServiceImplTest {
         assertEquals(0, vo.getCheckedQuantity());
     }
 
+    // ---------------- 缓存读路径（Redis 读加速，DB 为主存） ----------------
+
+    @Test
+    void list_should_hit_cache_without_querying_cart_table() {
+        // 缓存命中：field=skuId，value=条目id|quantity|checked
+        when(hashOperations.entries("cart:1")).thenReturn(hashEntries(
+                "10", "9|2|1",
+                "11", "8|1|0"
+        ));
+        when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                skuWithPrice(10L, 100L, 1, 10, "10.00"),
+                skuWithPrice(11L, 100L, 1, 10, "5.00")
+        ));
+        when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
+
+        CartVO vo = cartService.list(USER_ID);
+
+        // 购物车表零查询：条目状态数据全部来自 Redis
+        verify(cartItemMapper, never()).selectList(any(LambdaQueryWrapper.class));
+        assertEquals(2, vo.getItems().size());
+        // 与 DB 列表一致：按条目 id 倒序
+        CartItemVO first = vo.getItems().get(0);
+        assertEquals(9L, first.getId());
+        assertEquals(10L, first.getSkuId());
+        assertEquals(2, first.getQuantity());
+        assertTrue(first.getChecked());
+        assertFalse(first.getInvalid());
+        assertEquals(0, new BigDecimal("20.00").compareTo(first.getSubtotal()));
+
+        CartItemVO second = vo.getItems().get(1);
+        assertEquals(8L, second.getId());
+        assertEquals(11L, second.getSkuId());
+        assertEquals(1, second.getQuantity());
+        assertFalse(second.getChecked());
+
+        assertEquals(3, vo.getTotalQuantity());
+        assertEquals(2, vo.getCheckedQuantity());
+        assertEquals(0, new BigDecimal("20.00").compareTo(vo.getCheckedAmount()));
+    }
+
+    @Test
+    void list_should_fallback_to_db_and_rebuild_when_cache_miss() {
+        // HGETALL 返回空 map → miss，回源 DB
+        when(hashOperations.entries("cart:1")).thenReturn(Map.of());
+        when(cartItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                cartItem(9L, 10L, 2, 1)
+        ));
+        when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                skuWithPrice(10L, 100L, 1, 10, "10.00")
+        ));
+        when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
+
+        CartVO vo = cartService.list(USER_ID);
+
+        assertEquals(1, vo.getItems().size());
+        assertEquals(2, vo.getTotalQuantity());
+        // 整 cart 重建缓存 + 滑动续期 7 天
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, String>> cacheCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(hashOperations).putAll(eq("cart:1"), cacheCaptor.capture());
+        assertEquals(Map.of("10", "9|2|1"), cacheCaptor.getValue());
+        verify(stringRedisTemplate).expire(eq("cart:1"), eq(Duration.ofDays(7)));
+    }
+
+    @Test
+    void list_should_fallback_to_db_when_cache_entry_corrupted() {
+        // 任一 entry 解析失败 → 视为缓存损坏，整体回源并重建
+        when(hashOperations.entries("cart:1")).thenReturn(hashEntries("10", "garbage"));
+        when(cartItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                cartItem(9L, 10L, 2, 1)
+        ));
+        when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                skuWithPrice(10L, 100L, 1, 10, "10.00")
+        ));
+        when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
+
+        CartVO vo = cartService.list(USER_ID);
+
+        assertEquals(1, vo.getItems().size());
+        verify(cartItemMapper).selectList(any(LambdaQueryWrapper.class));
+        verify(hashOperations).putAll(eq("cart:1"), anyMap());
+    }
+
+    // ---------------- 缓存写路径（DB 成功后同步 Redis） ----------------
+
+    @Test
+    void add_should_sync_redis_field_after_db_insert() {
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 5));
+        when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
+        when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        // 模拟 MyBatis-Plus insert 后回填自增主键
+        when(cartItemMapper.insert(any(CartItem.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, CartItem.class).setId(9L);
+            return 1;
+        });
+
+        cartService.add(USER_ID, addRequest(10L, 2));
+
+        verify(hashOperations).putAll("cart:1", Map.of("10", "9|2|1"));
+        verify(stringRedisTemplate).expire(eq("cart:1"), eq(Duration.ofDays(7)));
+    }
+
+    @Test
+    void add_should_not_touch_redis_when_db_write_never_happens() {
+        // 库存不足在 DB 写之前即抛异常，不应有任何缓存同步
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 3));
+        when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
+        when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> cartService.add(USER_ID, addRequest(10L, 5)));
+        assertEquals(ResultCode.CART_STOCK_INSUFFICIENT.getCode(), ex.getCode());
+        verifyNoInteractions(hashOperations);
+        verify(stringRedisTemplate, never()).expire(any(String.class), any(Duration.class));
+    }
+
+    @Test
+    void updateQuantity_should_sync_redis_field_after_db_update() {
+        when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 10));
+        when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
+
+        cartService.updateQuantity(USER_ID, 9L, quantityRequest(4));
+
+        verify(hashOperations).putAll("cart:1", Map.of("10", "9|4|1"));
+    }
+
+    @Test
+    void updateChecked_should_sync_redis_field_after_db_update() {
+        when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
+
+        cartService.updateChecked(USER_ID, 9L, checkedRequest(false));
+
+        verify(hashOperations).putAll("cart:1", Map.of("10", "9|1|0"));
+    }
+
+    @Test
+    void updateAllChecked_should_sync_redis_after_db_update() {
+        when(cartItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                cartItem(1L, 10L, 2, 1),
+                cartItem(2L, 11L, 1, 1)
+        ));
+
+        cartService.updateAllChecked(USER_ID, checkedRequest(false));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, String>> cacheCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(hashOperations).putAll(eq("cart:1"), cacheCaptor.capture());
+        assertEquals(Map.of("10", "1|2|0", "11", "2|1|0"), cacheCaptor.getValue());
+        verify(stringRedisTemplate).expire(eq("cart:1"), eq(Duration.ofDays(7)));
+    }
+
+    @Test
+    void delete_should_remove_redis_field_after_db_delete() {
+        when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
+
+        cartService.delete(USER_ID, 9L);
+
+        verify(cartItemMapper).deleteById(9L);
+        verify(hashOperations).delete("cart:1", "10");
+    }
+
+    @Test
+    void deleteChecked_should_evict_whole_cart_cache_after_db_delete() {
+        cartService.deleteChecked(USER_ID);
+
+        verify(cartItemMapper).delete(any(LambdaQueryWrapper.class));
+        verify(stringRedisTemplate).delete("cart:1");
+    }
+
+    @Test
+    void clear_should_evict_whole_cart_cache_after_db_delete() {
+        cartService.clear(USER_ID);
+
+        verify(cartItemMapper).delete(any(LambdaQueryWrapper.class));
+        verify(stringRedisTemplate).delete("cart:1");
+    }
+
     // ---------------- 构造辅助 ----------------
 
     private CartAddRequest addRequest(Long skuId, Integer quantity) {
@@ -422,6 +621,17 @@ class CartServiceImplTest {
         CartCheckedRequest request = new CartCheckedRequest();
         request.setChecked(checked);
         return request;
+    }
+
+    /**
+     * 构造 Redis Hash 的 HGETALL 返回（field/value 交替传入）
+     */
+    private Map<Object, Object> hashEntries(Object... pairs) {
+        Map<Object, Object> map = new HashMap<>();
+        for (int i = 0; i < pairs.length; i += 2) {
+            map.put(pairs[i], pairs[i + 1]);
+        }
+        return map;
     }
 
     private CartItem cartItem(Long id, Long skuId, Integer quantity, Integer checked) {
