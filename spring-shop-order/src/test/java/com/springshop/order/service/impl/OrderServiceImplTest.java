@@ -8,6 +8,7 @@ import com.springshop.cart.mapper.CartItemMapper;
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.PageResult;
 import com.springshop.common.result.ResultCode;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.order.dto.AdminOrderPageQuery;
 import com.springshop.order.dto.OrderCreateRequest;
 import com.springshop.order.dto.OrderPageQuery;
@@ -33,8 +34,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -42,6 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -72,6 +76,9 @@ class OrderServiceImplTest {
 
     @Mock
     private ProductMapper productMapper;
+
+    @Mock
+    private StringRedisTemplate stringRedisTemplate;
 
     @InjectMocks
     private OrderServiceImpl orderService;
@@ -338,6 +345,49 @@ class OrderServiceImplTest {
         verify(orderMapper).updateById(captor.capture());
         assertEquals(OrderStatus.CANCELLED.getCode(), captor.getValue().getStatus());
         assertNotNull(captor.getValue().getCancelTime());
+    }
+
+    // ---------------- 系统取消（超时自动取消） ----------------
+
+    @Test
+    void systemCancel_should_restore_stock_and_evict_cache_when_conditional_update_hits() {
+        // 条件更新命中：订单仍处于待付款状态，置为已取消并返回影响行数 1
+        when(orderMapper.cancelIfPendingPayment(eq(1000L), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.CANCELLED.getCode()), any(LocalDateTime.class))).thenReturn(1);
+        when(orderItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                orderItem(1000L, 10L, 100L, 2),
+                orderItem(1000L, 11L, 101L, 1)));
+
+        orderService.systemCancel(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
+
+        // 逐条回滚库存与销量
+        verify(productSkuMapper).restoreStock(10L, 2);
+        verify(productSkuMapper).restoreStock(11L, 1);
+        verify(productMapper).decreaseSales(100L, 2);
+        verify(productMapper).decreaseSales(101L, 1);
+
+        // 状态置为已取消（CANCELLED 入参）且取消时间非空
+        ArgumentCaptor<LocalDateTime> cancelTimeCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(orderMapper).cancelIfPendingPayment(eq(1000L), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.CANCELLED.getCode()), cancelTimeCaptor.capture());
+        assertNotNull(cancelTimeCaptor.getValue());
+
+        // 销量变更后主动失效涉及商品的详情缓存
+        verify(stringRedisTemplate).delete(RedisKeys.productDetail(100L));
+        verify(stringRedisTemplate).delete(RedisKeys.productDetail(101L));
+    }
+
+    @Test
+    void systemCancel_should_skip_rollback_when_conditional_update_misses() {
+        // 条件更新影响 0 行：订单已被用户取消或已支付，静默返回，不回滚库存与销量
+        when(orderMapper.cancelIfPendingPayment(eq(1000L), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.CANCELLED.getCode()), any(LocalDateTime.class))).thenReturn(0);
+
+        orderService.systemCancel(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
+
+        verify(productSkuMapper, never()).restoreStock(any(), any());
+        verify(productMapper, never()).decreaseSales(any(), any());
+        verify(orderItemMapper, never()).selectList(any(LambdaQueryWrapper.class));
     }
 
     @Test

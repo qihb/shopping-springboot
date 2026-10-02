@@ -4,6 +4,7 @@ import com.springshop.common.result.PageResult;
 import com.springshop.order.dto.AdminOrderPageQuery;
 import com.springshop.order.dto.OrderCreateRequest;
 import com.springshop.order.dto.OrderPageQuery;
+import com.springshop.order.entity.Order;
 import com.springshop.order.vo.OrderVO;
 
 /**
@@ -37,6 +38,12 @@ public interface OrderService {
      * 取消订单：待付款 → 已取消，回滚库存
      */
     void cancel(Long userId, String orderNo);
+
+    /**
+     * 系统取消（超时自动取消定时任务调用）：仅当订单仍为待付款时置为已取消并回滚库存；
+     * 订单已被用户取消或已支付时静默返回，不抛异常
+     */
+    void systemCancel(Order order);
 
     /**
      * 确认收货：待收货 → 已完成

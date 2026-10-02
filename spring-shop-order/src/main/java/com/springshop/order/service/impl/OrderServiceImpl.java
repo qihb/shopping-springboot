@@ -7,6 +7,7 @@ import com.springshop.cart.mapper.CartItemMapper;
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.PageResult;
 import com.springshop.common.result.ResultCode;
+import com.springshop.common.security.RedisKeys;
 import com.springshop.order.dto.AdminOrderPageQuery;
 import com.springshop.order.dto.OrderCreateRequest;
 import com.springshop.order.dto.OrderPageQuery;
@@ -24,6 +25,7 @@ import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -60,19 +62,22 @@ public class OrderServiceImpl implements OrderService {
     private final CartItemMapper cartItemMapper;
     private final ProductSkuMapper productSkuMapper;
     private final ProductMapper productMapper;
+    private final StringRedisTemplate stringRedisTemplate;
 
     public OrderServiceImpl(OrderMapper orderMapper,
                             OrderItemMapper orderItemMapper,
                             ShippingAddressMapper shippingAddressMapper,
                             CartItemMapper cartItemMapper,
                             ProductSkuMapper productSkuMapper,
-                            ProductMapper productMapper) {
+                            ProductMapper productMapper,
+                            StringRedisTemplate stringRedisTemplate) {
         this.orderMapper = orderMapper;
         this.orderItemMapper = orderItemMapper;
         this.shippingAddressMapper = shippingAddressMapper;
         this.cartItemMapper = cartItemMapper;
         this.productSkuMapper = productSkuMapper;
         this.productMapper = productMapper;
+        this.stringRedisTemplate = stringRedisTemplate;
     }
 
     @Override
@@ -135,6 +140,9 @@ public class OrderServiceImpl implements OrderService {
                 .eq(CartItem::getUserId, userId)
                 .in(CartItem::getId, checkedItems.stream().map(CartItem::getId).toList()));
 
+        // 下单成功（提交前）主动失效涉及商品的详情缓存：销量已变，防止详情页在缓存 TTL 内读到旧销量
+        evictProductDetailCache(orderItems);
+
         return order.getOrderNo();
     }
 
@@ -187,13 +195,30 @@ public class OrderServiceImpl implements OrderService {
         List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>()
                 .eq(OrderItem::getOrderId, order.getId()));
         // 取消即回滚库存与销量，与订单状态变更同一事务
-        for (OrderItem item : items) {
-            productSkuMapper.restoreStock(item.getSkuId(), item.getQuantity());
-            productMapper.decreaseSales(item.getProductId(), item.getQuantity());
-        }
+        rollbackStockAndSales(items);
         order.setStatus(OrderStatus.CANCELLED.getCode());
         order.setCancelTime(LocalDateTime.now());
         orderMapper.updateById(order);
+        // 取消后主动失效涉及商品的详情缓存
+        evictProductDetailCache(items);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void systemCancel(Order order) {
+        // 条件更新保证并发安全：仅当订单仍为待付款时置为已取消；
+        // 影响 0 行说明订单已被用户取消或已支付，静默返回（不抛错、不回滚库存）
+        int updated = orderMapper.cancelIfPendingPayment(order.getId(),
+                OrderStatus.PENDING_PAYMENT.getCode(), OrderStatus.CANCELLED.getCode(), LocalDateTime.now());
+        if (updated == 0) {
+            return;
+        }
+        // 条件更新生效后才回滚库存与销量，与状态变更同一事务，任一步失败整体回滚
+        List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>()
+                .eq(OrderItem::getOrderId, order.getId()));
+        rollbackStockAndSales(items);
+        // 取消后主动失效涉及商品的详情缓存
+        evictProductDetailCache(items);
     }
 
     @Override
@@ -239,6 +264,28 @@ public class OrderServiceImpl implements OrderService {
         order.setStatus(OrderStatus.PENDING_RECEIPT.getCode());
         order.setShipTime(LocalDateTime.now());
         orderMapper.updateById(order);
+    }
+
+    /**
+     * 回滚订单库存与销量：按明细逐条恢复 SKU 库存、扣减商品销量（用户取消与系统取消共用）
+     */
+    private void rollbackStockAndSales(List<OrderItem> items) {
+        for (OrderItem item : items) {
+            productSkuMapper.restoreStock(item.getSkuId(), item.getQuantity());
+            productMapper.decreaseSales(item.getProductId(), item.getQuantity());
+        }
+    }
+
+    /**
+     * 主动失效商品详情缓存：按明细涉及的 productId 去重后逐个删除详情 key，
+     * 防止详情页在 30 分钟缓存 TTL 内读到过期的销量等数据
+     */
+    private void evictProductDetailCache(List<OrderItem> items) {
+        items.stream()
+                .map(OrderItem::getProductId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .forEach(productId -> stringRedisTemplate.delete(RedisKeys.productDetail(productId)));
     }
 
     /**
