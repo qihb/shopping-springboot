@@ -53,7 +53,12 @@ public enum ResultCode {
     ADMIN_ROLE_CODE_EXISTS(5011, "角色编码已存在"),
     ADMIN_ROLE_IN_USE(5012, "角色已分配给管理员，不可删除"),
     ADMIN_MENU_NOT_FOUND(5020, "菜单不存在"),
-    ADMIN_MENU_HAS_CHILDREN(5021, "菜单存在子节点，不可删除");
+    ADMIN_MENU_HAS_CHILDREN(5021, "菜单存在子节点，不可删除"),
+
+    // 业务码：支付模块（6000 段）
+    PAY_ORDER_NOT_FOUND(6001, "订单不存在"),
+    PAY_FORBIDDEN(6002, "无权支付该订单"),
+    PAY_STATUS_ILLEGAL(6003, "订单当前状态不可支付");
 
     private final Integer code;
 

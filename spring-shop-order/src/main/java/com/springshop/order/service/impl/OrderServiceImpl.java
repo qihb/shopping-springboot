@@ -181,11 +181,24 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
+    public Order getByOrderNo(String orderNo) {
+        return orderMapper.selectOne(new LambdaQueryWrapper<Order>()
+                .eq(Order::getOrderNo, orderNo));
+    }
+
+    @Override
     public void pay(Long userId, String orderNo) {
         Order order = requireOrder(userId, orderNo, OrderStatus.PENDING_PAYMENT);
         order.setStatus(OrderStatus.PENDING_SHIPMENT.getCode());
         order.setPayTime(LocalDateTime.now());
         orderMapper.updateById(order);
+    }
+
+    @Override
+    public boolean markPaid(String orderNo) {
+        // 条件更新（status=1 才生效）与超时取消任务天然互斥，影响 0 行即并发落败
+        return orderMapper.markPaid(orderNo, OrderStatus.PENDING_PAYMENT.getCode(),
+                OrderStatus.PENDING_SHIPMENT.getCode(), LocalDateTime.now()) > 0;
     }
 
     @Override

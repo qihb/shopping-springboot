@@ -41,6 +41,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -324,6 +325,32 @@ class OrderServiceImplTest {
                 () -> orderService.pay(USER_ID, "NO1000"));
         assertEquals(ResultCode.ORDER_STATUS_ILLEGAL.getCode(), ex.getCode());
         verify(orderMapper, never()).updateById(any(Order.class));
+    }
+
+    @Test
+    void markPaid_should_return_true_and_set_pending_shipment_when_update_hits() {
+        // 条件更新命中：订单仍处于待付款状态，置为已付款（待发货）并记录支付时间
+        when(orderMapper.markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.PENDING_SHIPMENT.getCode()), any(LocalDateTime.class))).thenReturn(1);
+
+        boolean paid = orderService.markPaid("NO1000");
+
+        assertTrue(paid);
+        ArgumentCaptor<LocalDateTime> payTimeCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(orderMapper).markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.PENDING_SHIPMENT.getCode()), payTimeCaptor.capture());
+        assertNotNull(payTimeCaptor.getValue());
+    }
+
+    @Test
+    void markPaid_should_return_false_when_update_misses() {
+        // 并发落败：订单已被取消或已被支付，条件更新影响 0 行，返回 false 供调用方回滚
+        when(orderMapper.markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.PENDING_SHIPMENT.getCode()), any(LocalDateTime.class))).thenReturn(0);
+
+        boolean paid = orderService.markPaid("NO1000");
+
+        assertFalse(paid);
     }
 
     @Test

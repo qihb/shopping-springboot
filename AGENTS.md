@@ -8,7 +8,7 @@
 - **项目定位**：生产级 Java 电商网站后端，单体应用架构（可扩展）
 - **基础框架**：Spring Boot 3.5.16 + Maven 多模块 + Java 21
 - **持久层**：MyBatis-Plus 3.5.17 + MySQL 8
-- **当前状态**：用户、商品、购物车、订单、管理后台五大业务模块已全部交付（注册/登录/JWT 认证、RBAC 权限中心、操作审计、下单库存扣减），测试基座与 CI 已就绪
+- **当前状态**：用户、商品、购物车、订单、支付、管理后台六大业务模块已全部交付（注册/登录/JWT 认证、RBAC 权限中心、操作审计、下单库存扣减、模拟支付），测试基座与 CI 已就绪
 
 ## 技术栈
 
@@ -39,6 +39,7 @@ spring_shop/
 ├── spring-shop-product/        # 商品模块：分类、SPU/SKU/图片，前后台列表与详情（读服务聚合）、库存条件扣减
 ├── spring-shop-cart/           # 购物车模块：加购、改数量、勾选、删除与购物车列表
 ├── spring-shop-order/          # 订单模块：收货地址、下单（快照 + 扣库存）、状态流转、后台发货
+├── spring-shop-pay/            # 支付模块：模拟支付、支付记录（幂等 + 条件更新防并发）
 ├── spring-shop-admin/          # 管理后台模块：管理员认证、RBAC 权限中心、操作审计
 │   └── src/main/java/com/springshop/admin/
 │       ├── aspect/             # 操作审计注解 + AOP 切面
@@ -61,6 +62,7 @@ spring_shop/
 - **spring-shop-product**：商品业务模块（分类、SPU/SKU/图片、前后台商品读写、库存扣减），依赖 common。
 - **spring-shop-cart**：购物车业务模块（加购、数量调整、勾选、删除），复用 product 的只读查询，依赖 common + product。
 - **spring-shop-order**：订单业务模块（收货地址、下单快照、条件扣库存、状态流转、后台发货），依赖 common + product + cart。
+- **spring-shop-pay**：支付业务模块（模拟支付、支付记录流水），复用 order 的订单查询与 markPaid 条件更新，依赖 common + order。
 - **spring-shop-admin**：管理后台业务模块（管理员认证、RBAC 权限中心、操作审计），依赖 common。
 - **spring-shop-web**：应用启动模块，含启动类、控制器、安全配置（前后台双过滤链）与配置文件，统一依赖所有业务模块。
 
@@ -143,6 +145,7 @@ public Result<String> health() {
 | 3000~3999 | 购物车模块 |
 | 4000~4999 | 订单模块 |
 | 5000~5999 | 管理后台模块 |
+| 6000~6999 | 支付模块 |
 
 新增错误码必须使用本模块段位内的数字。
 

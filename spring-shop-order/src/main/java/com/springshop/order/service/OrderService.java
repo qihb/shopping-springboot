@@ -30,9 +30,21 @@ public interface OrderService {
     OrderVO detail(Long userId, String orderNo);
 
     /**
+     * 按订单号查询订单实体（跨模块只读，供支付模块校验使用），不存在返回 null
+     */
+    Order getByOrderNo(String orderNo);
+
+    /**
      * 模拟支付：待付款 → 待发货
      */
     void pay(Long userId, String orderNo);
+
+    /**
+     * 标记订单已支付（跨模块，供支付模块在事务内调用）：仅当订单仍为待付款时
+     * 置为待发货并记录支付时间，条件更新防并发；返回是否更新成功（false 表示
+     * 订单已被取消或已支付，调用方据此回滚整个支付事务）
+     */
+    boolean markPaid(String orderNo);
 
     /**
      * 取消订单：待付款 → 已取消，回滚库存

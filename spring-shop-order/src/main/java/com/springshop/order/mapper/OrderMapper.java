@@ -26,4 +26,18 @@ public interface OrderMapper extends BaseMapper<Order> {
                                @Param("expectStatus") Integer expectStatus,
                                @Param("status") Integer status,
                                @Param("cancelTime") LocalDateTime cancelTime);
+
+    /**
+     * 条件支付：仅当订单仍处于待付款状态时置为已付款（待发货）并记录支付时间
+     *
+     * <p>与 {@link #cancelIfPendingPayment} 同一并发防护思路：数据库原子条件更新，
+     * 影响行数为 0 表示订单已被取消或已被支付，调用方据此放弃（支付模块抛状态非法异常，
+     * 超时任务静默跳过），避免支付与取消并发双写。
+     */
+    @Update("UPDATE orders SET status = #{status}, pay_time = #{payTime}, version = version + 1 "
+            + "WHERE order_no = #{orderNo} AND status = #{expectStatus} AND is_deleted = 0")
+    int markPaid(@Param("orderNo") String orderNo,
+                 @Param("expectStatus") Integer expectStatus,
+                 @Param("status") Integer status,
+                 @Param("payTime") LocalDateTime payTime);
 }
