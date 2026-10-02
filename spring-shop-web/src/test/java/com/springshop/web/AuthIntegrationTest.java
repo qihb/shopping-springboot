@@ -208,6 +208,37 @@ class AuthIntegrationTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void login_withClientIdHeader_shouldEmbedClientIdInToken() throws Exception {
+        register("alice");
+
+        String loginBody = mockMvc.perform(post("/api/auth/login")
+                        .header("X-Client-Id", "APP")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"alice\",\"password\":\"123456\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String token = objectMapper.readTree(loginBody).get("data").get("token").asText();
+
+        // 请求头声明的客户端标识应写入 token
+        assertEquals("APP", jwtTokenProvider.getClientId(token));
+    }
+
+    @Test
+    void login_withoutClientIdHeader_shouldEmbedDefaultWebClientId() throws Exception {
+        register("alice");
+
+        String loginBody = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"alice\",\"password\":\"123456\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String token = objectMapper.readTree(loginBody).get("data").get("token").asText();
+
+        // 未携带请求头时回落缺省端 WEB
+        assertEquals("WEB", jwtTokenProvider.getClientId(token));
+    }
+
     /**
      * 注册辅助方法：仅断言注册成功
      */

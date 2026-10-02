@@ -35,7 +35,7 @@ spring_shop/
 │       ├── result/             # 统一响应 Result / ResultCode / PageResult
 │       ├── dto/                # 通用分页入参 PageQuery
 │       └── security/           # JWT 工具 JwtTokenProvider、用户上下文 UserContext、RedisKeys
-├── spring-shop-user/           # 用户模块：注册、登录、当前用户
+├── spring-shop-user/           # 用户模块：注册、登录（含小程序）、当前用户、多端标识
 ├── spring-shop-product/        # 商品模块：分类、SPU/SKU/图片，前后台列表与详情（读服务聚合）、库存条件扣减
 ├── spring-shop-cart/           # 购物车模块：加购、改数量、勾选、删除与购物车列表
 ├── spring-shop-order/          # 订单模块：收货地址、下单（快照 + 扣库存）、状态流转、后台发货
@@ -58,7 +58,10 @@ spring_shop/
 ### 模块职责
 
 - **spring-shop-common**：跨模块共享的公共代码，**禁止出现业务逻辑**，只放通用能力（统一响应、异常、配置、工具类、通用枚举等）。
-- **spring-shop-user**：用户业务模块（注册、登录、JWT 认证适配），依赖 common。
+- **spring-shop-user**：用户业务模块（注册、登录、小程序登录、JWT 认证适配），依赖 common。
+  多端支持：请求头 `X-Client-Id`（`WEB`/`MINIAPP`/`APP`，缺省 `WEB`）经 `ClientIdFilter` 写入 `ClientContext`，
+  登录时把 clientId 写入 JWT 的 `clientId` claim；小程序登录 `POST /api/auth/miniapp/login` 用 code 换 openid，
+  首次登录自动建号（`user.openid` 唯一）。
 - **spring-shop-product**：商品业务模块（分类、SPU/SKU/图片、前后台商品读写、库存扣减），依赖 common。
 - **spring-shop-cart**：购物车业务模块（加购、数量调整、勾选、删除），复用 product 的只读查询，依赖 common + product。
 - **spring-shop-order**：订单业务模块（收货地址、下单快照、条件扣库存、状态流转、后台发货），依赖 common + product + cart。

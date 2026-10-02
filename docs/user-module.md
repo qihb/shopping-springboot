@@ -7,16 +7,20 @@
 ```
 spring-shop-user（业务模块，依赖 common）
 ├── controller
-│   ├── AuthController      # 认证接口：注册 / 登录（匿名可访问）
+│   ├── AuthController      # 认证接口：注册 / 登录 / 小程序登录（匿名可访问）
 │   └── UserController      # 用户接口：当前用户信息（需登录）
 ├── service
 │   ├── UserService         # 接口
 │   └── impl/UserServiceImpl # 业务实现（唯一含业务逻辑的地方）
+├── client
+│   ├── MiniAppAuthClient   # 小程序 code 换 openid 的抽象（可插拔）
+│   └── impl/WeChatMiniAppAuthClient # 微信 jscode2session 实现（未配置凭证时走 mock）
 ├── mapper/UserMapper       # 继承 BaseMapper<User>，无自定义 SQL
 ├── entity/User             # user 表映射实体
 ├── dto
 │   ├── RegisterRequest     # 注册入参（带校验注解）
-│   └── LoginRequest        # 登录入参
+│   ├── LoginRequest        # 登录入参
+│   └── MiniAppLoginRequest # 小程序登录入参（code + 可选昵称）
 ├── vo
 │   ├── UserInfoVO          # 用户出参（不含密码）
 │   └── LoginResponse       # 登录出参 = token + UserInfoVO
@@ -26,12 +30,15 @@ spring-shop-user（业务模块，依赖 common）
 
 spring-shop-common（公共，禁止业务逻辑）
 └── security
-    ├── JwtTokenProvider    # JWT 签发 / 验签
-    └── UserContext         # ThreadLocal 存当前用户 id
+    ├── JwtTokenProvider    # JWT 签发 / 验签（含 clientId claim）
+    ├── UserContext         # ThreadLocal 存当前用户 id
+    ├── ClientType          # 客户端类型枚举：WEB / MINIAPP / APP
+    └── ClientContext       # ThreadLocal 存当前客户端标识
 
 spring-shop-web（启动模块）
 └── security
     ├── SecurityConfig      # 过滤器链 / 白名单 / 401 处理
+    ├── ClientIdFilter      # 解析 X-Client-Id 请求头写入 ClientContext（早于安全链）
     └── JwtAuthenticationFilter # 每个请求执行一次的认证过滤器
 ```
 
@@ -140,6 +147,7 @@ sequenceDiagram
 | username | VARCHAR(50) UNIQUE | 用户名 |
 | password | VARCHAR(100) | BCrypt 密文 |
 | nickname / phone | VARCHAR | 可选 |
+| openid | VARCHAR(64) UNIQUE | 微信小程序 openid（多端登录标识），普通注册用户为空 |
 | status | TINYINT | 1 正常 / 0 禁用 |
 | create_time / update_time | DATETIME | 自动填充 |
 | is_deleted | TINYINT | 逻辑删除（`@TableLogic`） |
@@ -152,3 +160,48 @@ sequenceDiagram
 3. **前台 token 现在带 `userType=USER`，但仍然不带角色权限**：`UserPrincipal.getAuthorities()` 返回空集合，目前 `@EnableMethodSecurity` 已开启但前台侧尚未引入 RBAC；后台 RBAC 已独立放在 `spring-shop-admin`。
 4. **JWT 无状态 = 无法主动踢人**：禁用用户只是登录时校验 status，已签发的 token 在过期前仍有效。
 5. **校验异常统一被 `GlobalExceptionHandler` 处理**，返回 400 + 第一个字段错误信息，不是 Spring 默认格式。
+
+## 八、多端支持（客户端标识 + 小程序登录）
+
+### 1. 客户端标识 Header
+
+所有请求可通过 `X-Client-Id` 请求头声明客户端类型：`WEB`（缺省）/ `MINIAPP` / `APP`。
+
+- `ClientIdFilter`（`Ordered.HIGHEST_PRECEDENCE + 10`，早于 Spring Security 过滤链）解析该头，
+  归一化后写入 `ClientContext`（ThreadLocal），请求结束清理；
+- 缺失或非法值一律回落缺省端 `WEB`，不拦截请求；
+- 登录时 `UserServiceImpl` 从 `ClientContext` 取出 clientId，写入 JWT 的 `clientId` claim。
+
+### 2. 登录时 clientId 入 token
+
+`JwtTokenProvider.generateToken(userId, username, userType, clientId)` 新增 `clientId` claim，
+可用 `getClientId(token)` 读取，用于识别 token 由哪一端签发（审计 / 后续按端强制下线）。
+
+- 用户名密码登录：clientId 取当前请求的 `X-Client-Id`（缺省 `WEB`）；
+- 小程序登录：clientId 固定为 `MINIAPP`；
+- 认证过滤器在请求头缺失时，用 token 内的 clientId 回填 `ClientContext`（请求头优先级更高）。
+
+### 3. 小程序登录 `POST /api/auth/miniapp/login`（匿名）
+
+入参 `MiniAppLoginRequest`：`code`（`@NotBlank`，`wx.login()` 返回的临时凭证）+ 可选 `nickname`。
+
+流程：
+
+1. `MiniAppAuthClient.getOpenid(code)` 换取 openid：
+   - 已配置 `miniapp.appid` / `miniapp.secret` → 调用微信 `sns/jscode2session`；
+   - 未配置（本地开发 / 测试）→ mock 模式，openid 由 code 确定性派生，无需外网；
+2. 按 `openid` 查用户：已绑定 → 直接登录；
+3. 未绑定 → 自动创建用户（用户名 `wx_` + openid 的 MD5，密码随机串，昵称默认「微信用户」，写入 openid），
+   并发首次登录用唯一键 + 回查兜底；
+4. 校验 `status == 1` 后签发 token（clientId = `MINIAPP`）。
+
+### 4. 数据库变更
+
+- 新增迁移脚本 `V6__user_miniapp.sql`：`user` 表增加 `openid VARCHAR(64)` 与唯一索引 `uk_user_openid`
+  （允许多个 NULL，普通注册用户不受影响）；测试库同步脚本见 `db/migration-test/V6__user_miniapp.sql`。
+
+### 5. 新增错误码
+
+| 错误码 | 含义 |
+|--------|------|
+| 1006 | 小程序登录失败（code 失效 / 微信接口异常） |

@@ -1,6 +1,7 @@
 package com.springshop.user.service;
 
 import com.springshop.user.dto.LoginRequest;
+import com.springshop.user.dto.MiniAppLoginRequest;
 import com.springshop.user.dto.RegisterRequest;
 import com.springshop.user.vo.LoginResponse;
 import com.springshop.user.vo.UserInfoVO;
@@ -16,9 +17,14 @@ public interface UserService {
     void register(RegisterRequest request);
 
     /**
-     * 登录：校验密码，签发 JWT
+     * 登录：校验密码，签发 JWT（clientId 取当前请求的客户端标识）
      */
     LoginResponse login(LoginRequest request);
+
+    /**
+     * 小程序登录：用 code 换取 openid，已绑定则登录、未绑定则自动创建用户后签发 JWT
+     */
+    LoginResponse miniAppLogin(MiniAppLoginRequest request);
 
     /**
      * 获取当前登录用户信息

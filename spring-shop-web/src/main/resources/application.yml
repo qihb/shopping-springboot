@@ -55,6 +55,12 @@ jwt:
   # 过期时间（毫秒），默认 2 小时
   expiration: ${JWT_EXPIRATION:7200000}
 
+# 微信小程序（多端登录）：appid / secret 留空时走本地 mock（openid 由 code 确定性派生，无需外网）；
+# 生产通过环境变量注入真实小程序凭证后，自动切换为调用微信 jscode2session 接口换取 openid
+miniapp:
+  appid: ${MINIAPP_APPID:}
+  secret: ${MINIAPP_SECRET:}
+
 # 订单超时自动取消：待付款订单超过该分钟数未支付，由定时任务自动取消并回滚库存
 order:
   timeout:

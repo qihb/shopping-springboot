@@ -32,6 +32,9 @@ public class User {
     /** 手机号 */
     private String phone;
 
+    /** 微信小程序 openid（多端登录标识，唯一；普通用户名注册的用户为空） */
+    private String openid;
+
     /** 账号状态：1 正常 / 0 禁用 */
     private Integer status;
 
@@ -89,6 +92,14 @@ public class User {
 
     public void setPhone(String phone) {
         this.phone = phone;
+    }
+
+    public String getOpenid() {
+        return openid;
+    }
+
+    public void setOpenid(String openid) {
+        this.openid = openid;
     }
 
     public Integer getStatus() {

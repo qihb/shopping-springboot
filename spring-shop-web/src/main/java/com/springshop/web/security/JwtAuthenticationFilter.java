@@ -1,5 +1,6 @@
 package com.springshop.web.security;
 
+import com.springshop.common.security.ClientContext;
 import com.springshop.common.security.JwtTokenProvider;
 import com.springshop.common.security.RedisKeys;
 import com.springshop.common.security.UserContext;
@@ -28,7 +29,8 @@ import java.io.IOException;
  * 1. 读取 {@code Authorization: Bearer <token>} 请求头；
  * 2. 验签解析出用户名，加载用户信息；
  * 3. 构造认证对象写入 {@link SecurityContextHolder}（Spring Security 由此判定已登录）；
- * 4. 同时写入 {@link UserContext}，供 Controller 直接获取当前用户 id。
+ * 4. 同时写入 {@link UserContext}，供 Controller 直接获取当前用户 id；
+ * 5. 请求头未指定 {@code X-Client-Id} 时，用 token 内的 clientId 补齐 {@link ClientContext}。
  *
  * <p>token 无效时不做任何认证设置，请求会落入 Security 的未授权处理（401）。
  */
@@ -88,6 +90,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                 SecurityContextHolder.getContext().setAuthentication(authentication);
                 UserContext.setUserId(jwtTokenProvider.getUserId(token));
+                // 请求头未显式指定客户端时，回落到 token 内记录的 clientId，
+                // 保证「登录端」信息在后续请求中延续（请求头优先级更高）
+                if (!StringUtils.hasText(request.getHeader(ClientContext.HEADER))) {
+                    ClientContext.setClientId(jwtTokenProvider.getClientId(token));
+                }
             }
         } catch (Exception e) {
             // token 过期、签名非法等一律视为未登录

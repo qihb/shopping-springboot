@@ -31,6 +31,8 @@ public class JwtTokenProvider {
 
     private static final String CLAIM_USER_TYPE = "userType";
 
+    private static final String CLAIM_CLIENT_ID = "clientId";
+
     private final SecretKey key;
 
     /** 过期时间（毫秒） */
@@ -43,28 +45,41 @@ public class JwtTokenProvider {
     }
 
     /**
-     * 签发前台用户 token（userType 固定为 USER）
+     * 签发前台用户 token（userType 固定为 USER，客户端标识回落缺省端）
      *
      * @param userId   用户 id（存入 claim，供 Controller 通过 UserContext 使用）
      * @param username 用户名（作为 subject）
      */
     public String generateToken(Long userId, String username) {
-        return generateToken(userId, username, USER_TYPE_USER);
+        return generateToken(userId, username, USER_TYPE_USER, ClientType.DEFAULT.getCode());
     }
 
     /**
-     * 签发 token
+     * 签发 token（客户端标识回落缺省端，兼容后台等无需区分端的场景）
      *
      * @param userId   用户 id（存入 claim，供 Controller 通过 UserContext 使用）
      * @param username 用户名（作为 subject）
      * @param userType 持有者类型：{@link #USER_TYPE_ADMIN} / {@link #USER_TYPE_USER}
      */
     public String generateToken(Long userId, String username, String userType) {
+        return generateToken(userId, username, userType, ClientType.DEFAULT.getCode());
+    }
+
+    /**
+     * 签发 token（完整参数）
+     *
+     * @param userId   用户 id（存入 claim，供 Controller 通过 UserContext 使用）
+     * @param username 用户名（作为 subject）
+     * @param userType 持有者类型：{@link #USER_TYPE_ADMIN} / {@link #USER_TYPE_USER}
+     * @param clientId 客户端标识：WEB / MINIAPP / APP（写入 claim，记录 token 由哪一端签发）
+     */
+    public String generateToken(Long userId, String username, String userType, String clientId) {
         Date now = new Date();
         return Jwts.builder()
                 .subject(username)
                 .claim(CLAIM_USER_ID, userId)
                 .claim(CLAIM_USER_TYPE, userType)
+                .claim(CLAIM_CLIENT_ID, ClientType.from(clientId).getCode())
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + expiration))
                 .signWith(key)
@@ -101,6 +116,13 @@ public class JwtTokenProvider {
      */
     public String getUserType(String token) {
         return parseClaims(token).get(CLAIM_USER_TYPE, String.class);
+    }
+
+    /**
+     * 从 token 中提取客户端标识（WEB / MINIAPP / APP），用于识别 token 的签发端
+     */
+    public String getClientId(String token) {
+        return parseClaims(token).get(CLAIM_CLIENT_ID, String.class);
     }
 
     /**

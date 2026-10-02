@@ -2,9 +2,12 @@ package com.springshop.user.service.impl;
 
 import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.ResultCode;
+import com.springshop.common.security.ClientType;
 import com.springshop.common.security.JwtTokenProvider;
 import com.springshop.common.security.RedisKeys;
+import com.springshop.user.client.MiniAppAuthClient;
 import com.springshop.user.dto.LoginRequest;
+import com.springshop.user.dto.MiniAppLoginRequest;
 import com.springshop.user.dto.RegisterRequest;
 import com.springshop.user.entity.User;
 import com.springshop.user.mapper.UserMapper;
@@ -24,6 +27,7 @@ import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -49,6 +53,9 @@ class UserServiceImplTest {
     private JwtTokenProvider jwtTokenProvider;
 
     @Mock
+    private MiniAppAuthClient miniAppAuthClient;
+
+    @Mock
     private StringRedisTemplate stringRedisTemplate;
 
     private final ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
@@ -59,7 +66,7 @@ class UserServiceImplTest {
     void setUp() {
         // @Value primitive long 无法被 Mockito 注入，手动构造并显式传 token 有效期
         userService = new UserServiceImpl(userMapper, passwordEncoder, jwtTokenProvider,
-                stringRedisTemplate, 7200000L);
+                miniAppAuthClient, stringRedisTemplate, 7200000L);
         // register/getCurrentUser 等用例不触碰 Redis，用 lenient 规避严格模式的 UnnecessaryStubbing
         lenient().when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
     }
@@ -152,7 +159,7 @@ class UserServiceImplTest {
 
         BusinessException e = assertThrows(BusinessException.class, () -> userService.login(request));
         assertEquals(ResultCode.PASSWORD_ERROR.getCode(), e.getCode());
-        verify(jwtTokenProvider, never()).generateToken(any(), any());
+        verify(jwtTokenProvider, never()).generateToken(any(), any(), any(), any());
     }
 
     @Test
@@ -184,7 +191,8 @@ class UserServiceImplTest {
         user.setStatus(1);
         when(userMapper.selectOne(any())).thenReturn(user);
         when(passwordEncoder.matches("123456", "hash")).thenReturn(true);
-        when(jwtTokenProvider.generateToken(1L, "alice")).thenReturn("jwt-token");
+        when(jwtTokenProvider.generateToken(1L, "alice", JwtTokenProvider.USER_TYPE_USER, ClientType.WEB.getCode()))
+                .thenReturn("jwt-token");
 
         LoginRequest request = new LoginRequest();
         request.setUsername("alice");
@@ -198,7 +206,8 @@ class UserServiceImplTest {
         assertEquals("alice", vo.getUsername());
         assertEquals("爱丽丝", vo.getNickname());
         // VO 不应携带密码
-        verify(jwtTokenProvider).generateToken(eq(1L), eq("alice"));
+        verify(jwtTokenProvider).generateToken(eq(1L), eq("alice"),
+                eq(JwtTokenProvider.USER_TYPE_USER), eq(ClientType.WEB.getCode()));
     }
 
     @Test
@@ -251,7 +260,8 @@ class UserServiceImplTest {
         when(userMapper.selectOne(any())).thenReturn(user);
         when(passwordEncoder.matches("123456", "hash")).thenReturn(true);
         when(valueOperations.get(anyString())).thenReturn(null);
-        when(jwtTokenProvider.generateToken(1L, "alice")).thenReturn("jwt-token");
+        when(jwtTokenProvider.generateToken(1L, "alice", JwtTokenProvider.USER_TYPE_USER, ClientType.WEB.getCode()))
+                .thenReturn("jwt-token");
 
         LoginRequest request = new LoginRequest();
         request.setUsername("alice");
@@ -301,5 +311,97 @@ class UserServiceImplTest {
         assertEquals(1L, vo.getId());
         assertEquals("alice", vo.getUsername());
         assertEquals("爱丽丝", vo.getNickname());
+    }
+
+    // ---------- 小程序登录 ----------
+
+    @Test
+    void miniAppLogin_shouldCreateUserWhenOpenidNotBound() {
+        when(miniAppAuthClient.getOpenid("code-1")).thenReturn("openid-1");
+        when(userMapper.selectOne(any())).thenReturn(null);
+        // 模拟插入后回填自增主键
+        when(userMapper.insert(any(User.class))).thenAnswer(invocation -> {
+            User inserted = invocation.getArgument(0);
+            inserted.setId(10L);
+            return 1;
+        });
+        when(jwtTokenProvider.generateToken(any(), any(), any(), any())).thenReturn("mini-jwt");
+
+        MiniAppLoginRequest request = new MiniAppLoginRequest();
+        request.setCode("code-1");
+
+        LoginResponse response = userService.miniAppLogin(request);
+
+        assertEquals("mini-jwt", response.getToken());
+        assertEquals(10L, response.getUser().getId());
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userMapper).insert(captor.capture());
+        User created = captor.getValue();
+        assertEquals("openid-1", created.getOpenid());
+        assertEquals("微信用户", created.getNickname());
+        assertTrue(created.getUsername().startsWith("wx_"));
+        assertEquals(1, created.getStatus());
+    }
+
+    @Test
+    void miniAppLogin_shouldReuseExistingUserAndSkipInsert() {
+        User existing = new User();
+        existing.setId(1L);
+        existing.setUsername("wx_existing");
+        existing.setNickname("老用户");
+        existing.setOpenid("openid-1");
+        existing.setStatus(1);
+        when(miniAppAuthClient.getOpenid("code-1")).thenReturn("openid-1");
+        when(userMapper.selectOne(any())).thenReturn(existing);
+        when(jwtTokenProvider.generateToken(any(), any(), any(), any())).thenReturn("mini-jwt");
+
+        MiniAppLoginRequest request = new MiniAppLoginRequest();
+        request.setCode("code-1");
+
+        LoginResponse response = userService.miniAppLogin(request);
+
+        assertEquals("mini-jwt", response.getToken());
+        assertEquals(1L, response.getUser().getId());
+        // 已绑定 openid 不应重复创建用户
+        verify(userMapper, never()).insert(any(User.class));
+    }
+
+    @Test
+    void miniAppLogin_shouldEmbedMiniAppClientIdInToken() {
+        User existing = new User();
+        existing.setId(1L);
+        existing.setUsername("wx_existing");
+        existing.setOpenid("openid-1");
+        existing.setStatus(1);
+        when(miniAppAuthClient.getOpenid("code-1")).thenReturn("openid-1");
+        when(userMapper.selectOne(any())).thenReturn(existing);
+        when(jwtTokenProvider.generateToken(any(), any(), any(), any())).thenReturn("mini-jwt");
+
+        MiniAppLoginRequest request = new MiniAppLoginRequest();
+        request.setCode("code-1");
+
+        userService.miniAppLogin(request);
+
+        // 小程序登录签发的 token 必须带 MINIAPP 客户端标识
+        verify(jwtTokenProvider).generateToken(eq(1L), eq("wx_existing"),
+                eq(JwtTokenProvider.USER_TYPE_USER), eq(ClientType.MINIAPP.getCode()));
+    }
+
+    @Test
+    void miniAppLogin_shouldThrowWhenUserDisabled() {
+        User existing = new User();
+        existing.setId(1L);
+        existing.setUsername("wx_existing");
+        existing.setOpenid("openid-1");
+        existing.setStatus(0);
+        when(miniAppAuthClient.getOpenid("code-1")).thenReturn("openid-1");
+        when(userMapper.selectOne(any())).thenReturn(existing);
+
+        MiniAppLoginRequest request = new MiniAppLoginRequest();
+        request.setCode("code-1");
+
+        BusinessException e = assertThrows(BusinessException.class, () -> userService.miniAppLogin(request));
+        assertEquals(ResultCode.USER_DISABLED.getCode(), e.getCode());
+        verify(jwtTokenProvider, never()).generateToken(any(), any(), any(), any());
     }
 }
