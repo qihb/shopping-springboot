@@ -59,3 +59,14 @@ jwt:
 order:
   timeout:
     cancel-minutes: 30
+
+# 可观测性：Actuator 仅暴露只读端点集合，env/beans 等敏感端点不对外；
+# health 不展示明细，避免泄露内部组件信息（路径已在 SecurityConfig 中放行）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
