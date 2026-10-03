@@ -34,16 +34,19 @@ spring_shop/
 │       ├── exception/          # 业务异常 + 全局异常处理
 │       ├── result/             # 统一响应 Result / ResultCode / PageResult
 │       ├── dto/                # 通用分页入参 PageQuery
+│       ├── excel/              # 通用 Excel 读写（Fesod 封装：ExcelSupport / ExcelStreamWriter /
+│       │                       #   ExcelExportSupport / ExcelRow / ExcelReadOptions / ExcelFileType）
+│       │   └── task/           # 通用异步导入导出任务框架（任务表、线程池、文件存取、进度与失败明细）
 │       └── security/           # JWT 工具 JwtTokenProvider、用户上下文 UserContext、RedisKeys
 ├── spring-shop-user/           # 用户模块：注册、登录（含小程序）、当前用户、多端标识
 ├── spring-shop-product/        # 商品模块：分类、SPU/SKU/图片，前后台列表与详情（读服务聚合）、库存条件扣减
 ├── spring-shop-cart/           # 购物车模块：加购、改数量、勾选、删除与购物车列表
 ├── spring-shop-order/          # 订单模块：收货地址、下单（快照 + 扣库存）、状态流转、后台发货
 ├── spring-shop-pay/            # 支付模块：模拟支付、支付记录（幂等 + 条件更新防并发）
-├── spring-shop-admin/          # 管理后台模块：管理员认证、RBAC 权限中心、操作审计
+├── spring-shop-admin/          # 管理后台模块：管理员认证、RBAC 权限中心、操作审计、管理员账号管理、操作日志查询
 │   └── src/main/java/com/springshop/admin/
 │       ├── aspect/             # 操作审计注解 + AOP 切面
-│       ├── config/             # 初始数据初始化器 AdminDataInitializer
+│       ├── config/             # 初始数据初始化器 AdminDataInitializer（幂等 find-or-create）
 │       ├── security/           # AdminJwtAuthenticationFilter / AdminUserPrincipal / AdminUserDetailsService
 │       ├── controller/ service/ mapper/ entity/ dto/ vo/
 │       └── pom.xml             # 依赖 common + validation + aop + spring-security-web
@@ -147,6 +150,30 @@ public Result<String> health() {
 - 需要新增响应码时，在 `ResultCode` 枚举中扩展，**不要使用魔法数字**。
 - 全局兜底由 `GlobalExceptionHandler` 负责（参数校验、类型转换、未知异常）。
 
+### HTTP 状态码与业务码的分工
+
+项目同时使用「真实 HTTP 状态码」和「统一响应体里的业务码」，分工如下：
+
+| 场景 | HTTP 状态 | 响应体 | 由谁负责 |
+|------|-----------|--------|----------|
+| 未认证 / token 无效 / 账号被禁用 | 401 | `Result.fail(ResultCode.UNAUTHORIZED)` | 过滤链 `AuthenticationEntryPoint` |
+| 已认证但无权限（`@PreAuthorize` 拒绝） | 403 | `Result.fail(ResultCode.FORBIDDEN)` | `SecurityExceptionHandler`（web 模块） |
+| 业务校验失败（库存不足、用户名已存在等） | 200 | `Result.fail(业务码, 原因)` | `GlobalExceptionHandler` |
+| 上传文件超限 | 200 | `Result.fail(400, "上传文件过大…")` | `GlobalExceptionHandler` |
+
+> ⚠️ 上传超限这一行**成立的前提是同时配置了 `server.tomcat.max-swallow-size`**（当前 12MB）。
+> Tomcat 的 `maxSwallowSize` 默认只有 2MB，被拒绝的请求体超过 2MB 时 Tomcat 会直接断连，
+> 客户端拿到的是 `Broken pipe`，这个友好提示**根本送不出去**。详见「测试编写与 CI 通过规范」第 2 条。
+
+**认证/授权类失败必须用真实 HTTP 状态码**，因为前端（以及网关、监控）通常先按 HTTP 状态做统一拦截；
+业务类失败才走「HTTP 200 + 业务码」，避免把可预期的业务分支记成 HTTP 错误、污染监控指标。
+
+**为什么 `SecurityExceptionHandler` 放在 `spring-shop-web` 而不是 `spring-shop-common`**：
+`@PreAuthorize` 抛出的 `AccessDeniedException` 发生在 Controller 调用期，此时请求已越过 Security
+过滤链、不会经过 `ExceptionTranslationFilter`，只能由 `@RestControllerAdvice` 兜住；而
+`spring-shop-common` 刻意不依赖 spring-security（保持公共模块轻量），所以这个 Advice 放在
+web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 Advice 之前匹配。
+
 ### 错误码段位
 
 `ResultCode` 为全局共享枚举，多人并行开发时**按段位分配**，避免改同一文件冲突：
@@ -164,6 +191,50 @@ public Result<String> health() {
 
 新增错误码必须使用本模块段位内的数字。
 
+**已占用的 0~99 段（公共）**：
+
+| 码 | 含义 |
+|----|------|
+| 41 | `EXCEL_TASK_NOT_FOUND` 任务不存在（含「不是自己的任务」，两者返回同一个码） |
+| 42 | `EXCEL_TASK_DUPLICATE` 已有同类任务在执行中，请等它结束再提交 |
+| 43 | `EXCEL_TASK_BUSY` 任务排队已满，请稍后重新提交 |
+| 44 | `EXCEL_TASK_DISABLED` 导入导出功能已关闭 |
+| 45 | `EXCEL_TASK_NOT_FINISHED` 任务尚未完成，暂时无法下载 |
+| 46 | `EXCEL_TASK_NO_RESULT` 没有可下载的结果文件 |
+
+**已占用的 2000 段（product）**：
+
+| 码 | 含义 |
+|----|------|
+| 2001 | `PRODUCT_CATEGORY_NOT_FOUND` 商品分类不存在 |
+| 2002 | `PRODUCT_CATEGORY_HAS_CHILDREN` 分类下存在子分类，不可删除 |
+| 2003 | `PRODUCT_CATEGORY_HAS_PRODUCTS` 分类下存在商品，不可删除 |
+| 2010 | `PRODUCT_NOT_FOUND` 商品不存在 |
+| 2011 | `PRODUCT_SKU_NOT_FOUND` SKU 不存在 |
+| 2012 | `PRODUCT_SKU_CODE_DUPLICATE` SKU 编码重复 |
+| 2013 | `PRODUCT_SKU_EMPTY` 商品至少需要一个 SKU |
+| 2014 | `PRODUCT_OFF_SHELF` 商品已下架 |
+| 2020 | `PRODUCT_IMPORT_FILE_INVALID` 导入文件不合法，请下载模板后重新填写 |
+
+**已占用的 5000 段（admin）**：
+
+| 码 | 含义 |
+|----|------|
+| 5001 | `ADMIN_USER_NOT_FOUND` 管理员不存在 |
+| 5002 | `ADMIN_PASSWORD_ERROR` 用户名或密码错误 |
+| 5003 | `ADMIN_DISABLED` 账号已被禁用 |
+| 5004 | `ADMIN_LOCKED` 登录失败次数过多，账号已临时锁定，请稍后再试 |
+| 5005 | `ADMIN_TOKEN_INVALID` 登录已失效，请重新登录 |
+| 5006 | `ADMIN_USERNAME_EXISTS` 管理员用户名已存在 |
+| 5007 | `ADMIN_OLD_PASSWORD_ERROR` 原密码错误 |
+| 5008 | `ADMIN_SELF_OPERATION_FORBIDDEN` 不能对当前登录的管理员账号执行该操作 |
+| 5009 | `ADMIN_IMPORT_FILE_INVALID` 导入文件不合法，请下载模板后重新填写 |
+| 5010 | `ADMIN_ROLE_NOT_FOUND` 角色不存在 |
+| 5011 | `ADMIN_ROLE_CODE_EXISTS` 角色编码已存在 |
+| 5012 | `ADMIN_ROLE_IN_USE` 角色已分配给管理员，不可删除 |
+| 5020 | `ADMIN_MENU_NOT_FOUND` 菜单不存在 |
+| 5021 | `ADMIN_MENU_HAS_CHILDREN` 菜单存在子节点，不可删除 |
+
 **已占用的 7000 段（stats）**：
 
 | 码 | 含义 |
@@ -172,9 +243,84 @@ public Result<String> health() {
 | 7002 | `STATS_RECALL_PARAM_INVALID` 圈人参数不合法 |
 | 7003 | `STATS_RECALL_RUNNING` 圈人任务正在执行中，请稍后重试 |
 
+### 异步导入导出（Excel 任务框架，强约束）
+
+所有「批量导入 / 批量导出」一律走 `spring-shop-common` 的异步任务框架，**不允许**在业务模块里
+同步读写 Excel 或自己起线程。
+
+| 组件 | 职责 |
+|------|------|
+| `ExcelSupport` / `ExcelStreamWriter` / `ExcelExportSupport` | Fesod 封装：流式读、分批写、分页导出模板方法 |
+| `ExcelTaskExecutor` | 受理 + 调度 + 状态兜底（`submitImport` / `submitExport`） |
+| `ExcelTaskService` | 任务台账读写、失败明细存取、文件清理（**不含调度**，避免循环依赖） |
+| `ExcelTaskContext` | 交给业务执行体的上下文：源文件、结果文件、条件还原、进度上报、失败明细 |
+| `ExcelFileStorage` | 临时文件存取（`{tmpDir}/{yyyyMMdd}/{taskNo}.{ext}`） |
+| `ExcelTaskController`（web 模块） | `GET /api/admin/excel-tasks`、`/{taskNo}`、`/{taskNo}/download` |
+
+**硬约束**：
+
+1. **依赖只能用 Fesod，不要引 POI。** `fesod-sheet` 会传递引入 POI 5.5.x；再单独声明 `poi-ooxml`
+   会造成两个 POI 版本共存，运行期抛 `NoSuchMethodError`。
+2. **读必须显式指定文件类型**（`ExcelReadOptions.fileType(...)`）。不给类型时 Fesod 探测失败会
+   **静默退化成 CSV 解析**：垃圾字节读成 0 行而不报错，用户拿到的是「导入成功但一条都没进去」。
+3. **写表头是列优先**：`builder.head(List<List<String>>)` 的外层 list 是**列**，不是行。
+   传 `List.of(headers)` 会写出「3 行 × 1 列」的错位表头。统一走 `ExcelStreamWriter`，不要自己拼。
+4. **导出必须「边查边写」**：按 `excel.task.export-page-size` 分页拉取，每页写完立刻丢弃。
+   禁止先 `selectList` 全量再写盘 —— 十万行的结果集会把堆撑爆。分页取数用
+   `new Page<>(current, pageSize, false)`（`searchCount=false`，导出不需要总数）。
+5. **导出结果落盘、下载时流式拷贝**：Controller 写 `HttpServletResponse`，**不要**返回
+   `ResponseEntity<byte[]>`（后者会把整个文件读进堆）。下载接口返回 `void` 是文件下载的固有例外。
+6. **任务状态必须落库**（`excel_task` 表），不用 Redis / 内存：导入要跑几十秒到几分钟，
+   用户会刷新页面、应用会滚动重启，放内存就是「一直转圈」。
+7. **提交人身份在受理阶段取好**：`UserContext` 是 `ThreadLocal`，**不会**传播到异步线程，
+   必须在 Controller 里 `UserContext.getUserId()` 取出来当参数传下去。
+8. **执行体不能用 `@Transactional`**：它跑在异步线程里，自调用不走代理；批级事务用
+   `TransactionTemplate`，语义是「批内原子、批间独立」，并配合「整批回滚后逐组/逐行重试」，
+   让单条唯一键冲突降级为单行失败而不是整批失败。
+9. **执行体必须无条件收尾上报**。只在「有分组/有批次」时上报进度，会让「全部行都在校验阶段失败」
+   的文件以 `处理 0 行 / 失败 0 行` 收场，而失败明细里明明有内容。
+10. **同一业务类型 + 同一提交人不允许并发任务**（`assertNotRunning`），否则连点就能把线程池打满；
+    队列满时 `AbortPolicy` 直接拒绝并提示「排队已满」，**不要**用 `CallerRunsPolicy`
+    （HTTP 线程会亲自去跑几万行导入，请求必然超时）。
+11. **任务归属校验而不是权限码**：能提交任务说明已经过了权限码；查询/下载一律用 `created_by`
+    做归属校验，「任务不存在」与「不是我的任务」返回同一个错误码，不给探测他人任务号的机会。
+12. **阈值全部配置化**（`excel.task.*`）：批大小、线程数、分页大小、行数上限这些参数和部署机器
+    强相关，硬编码就只能改代码重发。
+
+**新增一个导出只需三步**：写一个 `@ExcelProperty` 标注的行模型（含 `from(VO)` 静态转换）、
+在查询服务里加一个 `xxxExportPage(query, current, pageSize)`（复用列表页的筛选口径、
+`searchCount=false`）、写一个 `XxxExportService` 调 `ExcelExportSupport.export(...)`。
+分页循环、进度上报、空数据写表头都由模板方法兜住。
+
+> 📎 **配套技能**：`.workbuddy-ai/skills/spring-shop-excel-task/` 是本框架的**可执行操作手册** ——
+> 代码地图（每个类在哪、干什么）、接口清单与权限码、「新增一个导入/导出」的步骤、
+> 装配陷阱（bean 名撞车 / `@MapperScan` 与 `*.mapper` 包 / 包名目录不一致）、
+> Fesod 三个静默失败的坑、异步集成测试铁律、以及一张「现象 → 先看哪里」排查表。
+> 本节是**规范来源**，那份技能是**动手时的向导**；两者冲突时以本节为准并顺手修技能。
+>
+> 其中 `references/task-internals.md` 记了任务表字段的设计理由与 `excel.task.*` 每一项
+> 改了会有什么后果，`references/fesod-pitfalls.md` 记了 Fesod 的正确写法与 `javap` 探针命令。
+
 ### 参数校验
 
 - 入参 DTO 使用 `spring-boot-starter-validation` 的注解（`@NotBlank`、`@NotNull`、`@Size` 等），并在 Controller 参数上加 `@Valid` / `@Validated`。
+
+### 日志与 profile 约定（强约束）
+
+运行时的 profile **只支持 `dev`（默认）和 `prod`**，由 `SPRING_PROFILES_ACTIVE` 控制。
+
+改动 `logback-spring.xml` 或新增 profile 时必须注意：
+
+- **数据源只在 `application-dev.yml` / `application-prod.yml` 里定义**，`application.yml` 本身不含 `spring.datasource`。
+  用其他 profile 启动会直接报 `Failed to determine a suitable driver class`。
+- **`<root>` 必须覆盖到所有 profile**。当前写法是 `dev` / `prod` 各一段，外加 `!dev & !prod` 兜底段。
+  若只留 `dev`/`prod`，其他 profile 下根 logger 会一个 appender 都没有 ——
+  Logback **不会**退回默认控制台输出，应用会「照常启动但一行日志都不打印」，
+  启动失败只剩退出码 1，排查时无从下手。
+- **不要在 `<configuration>` 里直接再写一个 `<root>`** 来做兜底：Logback 对多个 `<root>` 是**累加 appender**
+  而不是覆盖，会导致 `dev`/`prod` 下同一行日志打印两遍。用 `springProfile name="!dev & !prod"` 才是正确写法。
+- `test` profile 的数据源在 `src/test/resources/application-test.yml`（测试作用域，**不会打进 jar**），
+  它只服务于 `mvn test`，**不能**用 `java -jar --spring.profiles.active=test` 启动应用。
 
 ### MyBatis-Plus 约定
 
@@ -225,12 +371,82 @@ class XxxIntegrationTest {
 }
 ```
 
+**例外：涉及异步任务（Excel 导入/导出）的集成测试不得加 `@Transactional`。**
+
+任务执行体跑在独立的 `excel-task` 线程池里，用的是**另一条数据库连接**。测试方法的事务对它不可见：
+
+- 测试里建的前置数据（分类、商品）在异步线程里「查不到」→ 导入整批报「分类不存在」；
+- 任务表的状态回写落在另一个未提交的快照上 → 轮询永远读到「未开始」。
+
+所以这类测试必须：
+
+```java
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+// 刻意不加 @Transactional：执行体在另一个线程、另一条连接上
+class XxxImportIntegrationTest {
+
+    /** 本次 JVM 运行的唯一后缀，避免共享 H2 里的历史数据撞唯一键 */
+    private static final String RUN_TAG = Long.toString(System.nanoTime() % 1_000_000);
+}
+```
+
+1. 所有测试数据带 `RUN_TAG` 唯一后缀（H2 在同一个 surefire JVM 内是共享的）；
+2. 断言**按名称/编码过滤，不依赖任何「总数」**；
+3. 用**轮询**等任务到终态（50ms 一次 + 上限 30s），不要 `sleep` 固定时长；
+4. **`POST` 之外的动作也要看业务码**：业务失败同样是 HTTP 200，只看 `status().isOk()` 会把「没受理」当成「已受理」；
+5. **不要直接对 `Result.data` 调 `asLong()/asText()`**：`data` 为 JSON `null` 时 Jackson 给的是
+   `NullNode`（非 null 引用），`asLong()` 静默返回 `0` —— 于是「按 id 导出」变成「导出 id=0 的数据」，
+   一条都查不到且不报错。先断言 `code == 200` 并检查 `data` 非 null。
+
+> 反面教材（本次踩坑实录）：`POST /api/admin/categories` 返回 `Result<Void>`，
+> 测试用 `data.asLong()` 取分类 id 拿到 `0`，连带商品创建失败也拿到 `0`，
+> 最终「导出选中商品」导出 0 行 —— 全程没有任何异常，只有一个莫名其妙的断言失败。
+>
+> 另一个坑：**分类表对名称没有唯一约束**，每个用例都建一次同名分类会堆出多条，
+> 而导入按名称匹配分类时「同名多条宁可整组失败也不猜」→ 后跑的用例莫名其妙全军覆没。
+> 需要跨用例共享的分类，请幂等地只建一次。
+
+#### 2. 需要真实 Servlet 容器时（`multipart` / 大小限制 / 真实 HTTP 语义）
+
+MockMvc 是**伪造**请求，它构造 `MockMultipartHttpServletRequest`，**直接跳过容器的 multipart 解析**。
+所以凡是依赖 Servlet 容器真实行为的功能，必须用 `RANDOM_PORT` 另写一个测试类：
+
+```java
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("test")
+class XxxMultipartIntegrationTest {
+
+    @Autowired
+    private TestRestTemplate restTemplate;   // 真实 HTTP
+
+    @MockBean
+    private StringRedisTemplate stringRedisTemplate;
+    // 注意：这里刻意不加 @Transactional
+}
+```
+
+两条硬约束：
+
+- **不要加 `@Transactional`**：请求跑在 Tomcat 工作线程里，测试方法的事务回滚不了服务端事务，
+  加了只会制造「已经回滚」的错觉。因此这类测试**只能做只读或必然失败的操作**，不得写库 ——
+  `jdbc:h2:mem:spring_shop_test` 在同一个 surefire JVM 内是**共享**的，写脏会串到其他测试类。
+- **multipart 的文件字段必须带文件名**：用 `ByteArrayResource` 时要覆写 `getFilename()`，
+  否则该 part 会退化成普通字段，服务端不会按「上传文件」处理。
+
+> 血泪教训：`spring.servlet.multipart.max-file-size` 单独配置**并不能保证客户端体验** ——
+> 还要配 `server.tomcat.max-swallow-size`（当前 12MB，略大于 `max-request-size`）。
+> 否则超过 Tomcat 默认 `maxSwallowSize`（2MB）的请求会被容器直接断连，
+> 客户端只看到 `Broken pipe`，`GlobalExceptionHandler` 的可读提示送不出去。
+> 参考 `ProductImportMultipartIntegrationTest`。
+
 > **违反后果（本次踩坑实录）**：
 > - 缺 `@ActiveProfiles("test")` → 默认加载 dev profile → 尝试连接 `localhost:3306` 真实 MySQL / `localhost:6379` 真实 Redis → CI 环境无服务 → 连接超时失败。
 > - 缺 `@Transactional` → 前一个用例插入的脏数据影响后续用例 → 断言失败或唯一键冲突。
 > - 缺 `@MockBean StringRedisTemplate` → Spring 启动时创建 Lettuce Redis 客户端 → 端口连不上 → Bean 创建失败。
 
-#### 2. Service 层单元测试（业务模块 `src/test/java/**`，`*ServiceImplTest`）
+#### 3. Service 层单元测试（业务模块 `src/test/java/**`，`*ServiceImplTest`）
 
 使用 `@ExtendWith(MockitoExtension.class)` 纯 Mockito 隔离所有 Mapper/外部依赖，**不需要**启动 Spring 容器。模板：
 
@@ -243,7 +459,7 @@ class XxxServiceImplTest {
 }
 ```
 
-#### 3. 新增业务模块的安全白名单检查
+#### 4. 新增业务模块的安全白名单检查
 
 如果新增前台公开接口（匿名可访问，如商品浏览），必须在 `SecurityConfig#appSecurityFilterChain` 的 `permitAll()` 列表中加入对应路径；如果新增后台管理员接口（`/api/admin/**`），需要同时做两件事：
 1. 在 `AdminDataInitializer#buildMenus` 中注册对应菜单与按钮级权限（`product:product:create` 形式的 permissionCode）；
@@ -251,7 +467,31 @@ class XxxServiceImplTest {
 
 > 漏做任一项：要么 401/403 拒绝访问，要么方法级鉴权抛权限异常。
 
-#### 4. PR 前本地必跑清单（CI 的等价执行）
+好消息是这一条**已经由测试兜住了**：`AdminPermissionCoverageIntegrationTest` 会从运行时容器里
+把真实生效的 `@PreAuthorize` 表达式全部扫出来，再和 `menu` 表对账，断言：
+
+1. 每个权限码都已在 `menu` 表注册且启用；
+2. 每个权限码都已授予 `ADMIN` 角色（只注册不授权同样是 403）；
+3. 兜底断言扫描确实扫到了注解，避免反射失效导致用例「空转全绿」。
+
+所以漏注册权限不会再静默上线，而是 CI 直接红灯。注意该测试的解析规则目前只认
+`hasAuthority('...')`；若引入 `hasAnyAuthority` / `hasRole` 等写法，用例会**主动失败**提醒你同步解析逻辑，
+不会静默跳过。
+
+#### 5. 改动初始数据 / 种子数据时（`AdminDataInitializer`）
+
+初始数据不是「只在空库上跑一次」——它在**每一个已上线的老库**上每次启动都会跑。因此：
+
+- 新增菜单 / 按钮权限时，必须以 `menu.permission_code` 为幂等键**逐项补齐**，
+  不能写成「表非空就整体跳过」，否则新权限永远写不进老库，对应的 `@PreAuthorize` 永久 403。
+- 授权关联（`ensureRoleMenus` / `admin_user_role`）**只增不减**，重复启动不得产生重复行。
+- ⚠️ `menu.permission_code` 上**没有唯一索引**，重复插入不会被数据库拦住，只能靠幂等逻辑保证；
+  而 `role_menu` / `admin_user_role` 上有唯一键，重复授权会直接抛异常。
+- 改动初始数据后必须保证 `AdminDataInitializerUpgradeIntegrationTest` 通过。
+  该测试用**原生 SQL 物理删除**（不是逻辑删除）造出「老库」再重新触发一次初始化，
+  断言补齐 + 幂等；新增初始数据项时应同步扩充这个测试。
+
+#### 6. PR 前本地必跑清单（CI 的等价执行）
 
 ```bash
 # 等同 CI 中执行的 mvn -B clean verify

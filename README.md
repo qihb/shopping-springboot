@@ -51,11 +51,15 @@ spring-shop
 - **通用分页**：`PageQuery`（页码 + 每页条数）与 `PageResult<T>`（列表 + 总数 + 总页数），各模块分页接口复用。
 - **用户与认证**：注册（用户名唯一、BCrypt 加密）、登录（校验通过签发 JWT）、`GET /api/user/me` 获取当前登录用户。
 - **Spring Security 集成**：前后台双过滤链隔离（`/api/admin/**` 与前台互不越权），JWT 认证过滤器区分 ADMIN / USER 身份，除白名单接口外一律要求登录，当前用户 id 通过 `UserContext` 获取。
-- **管理后台与权限中心（RBAC）**：管理员登录（连续失败 5 次锁定 15 分钟、退出登录 token 进 Redis 黑名单主动失效）、角色管理、菜单管理（菜单即权限标识），支持 `@PreAuthorize` 按钮级鉴权；初始超级管理员 `admin / admin123` 启动时自动创建。
-- **操作审计**：`@OperationLog` 注解 + AOP 切面，自动记录后台关键操作的模块、操作类型、参数（密码脱敏）、IP、耗时并落库。
-- **数据库迁移**：Flyway 版本化脚本管理表结构（V1 用户 / V2 商品 / V3 订单与购物车 / V4 管理后台与权限）。
-- **测试与 CI**：JUnit 5 + Mockito 单元测试、MockMvc + H2 集成测试（不依赖本地 MySQL）、GitHub Actions 自动构建。
+- **管理后台与权限中心（RBAC）**：管理员登录（连续失败 5 次锁定 15 分钟、退出登录 token 进 Redis 黑名单主动失效）、**管理员账号管理**（增改 / 启停 / 重置密码 / 分配角色，用停用替代删除）、角色管理、菜单管理（菜单即权限标识）、**操作日志查询**，支持 `@PreAuthorize` 按钮级鉴权；初始超级管理员 `admin / admin123` 启动时自动创建。禁用或改权限在**下一次请求即生效**，无需等 token 过期。
+- **操作审计**：`@OperationLog` 注解 + AOP 切面，自动记录后台关键操作的模块、操作类型、参数（含 `*password*` 字段脱敏）、IP、耗时并落库。
+- **Excel 批量导入**：商品与管理员均支持模板下载 + 批量导入，采用**部分成功**策略（合法行落库，非法行逐行返回「Excel 行号 + 原因」）。Excel 能力以 POI 薄封装形式沉淀在 `spring-shop-common`，业务模块不直接依赖 POI。
+- **数据库迁移**：Flyway 版本化脚本管理表结构（V1 用户 / V2 商品 / V3 订单与购物车 / V4 管理后台与权限 / V5 支付 / V6 小程序 / V7 加购召回）。
+- **测试与 CI**：JUnit 5 + Mockito 单元测试、MockMvc + H2 集成测试（不依赖本地 MySQL）、GitHub Actions 自动构建。当前全量 `mvn clean verify` 为 255 个用例全绿。
 - **健康检查接口**：`GET /api/health` 用于验证服务是否正常启动。
+
+> HTTP 状态码约定：认证/授权类失败用真实状态码（未登录 401、无权限 403），
+> 业务类失败统一走「HTTP 200 + 响应体里的业务码」，避免把可预期的业务分支污染成 HTTP 错误。
 
 ## 业务模块
 
@@ -63,13 +67,15 @@ spring-shop
 
 | 模块 | 内容 | 状态 |
 |------|------|------|
-| 用户模块 | 注册、登录、个人中心 | ✅ 已完成 |
-| 管理后台 | 管理员认证（失败锁定 + 黑名单）、RBAC 权限中心、角色/菜单管理、操作审计 | ✅ 已完成 |
-| 商品模块 | 分类、商品列表、商品详情（SPU/SKU） | ✅ 已完成 |
+| 用户模块 | 注册、登录（含小程序）、个人中心、多端标识 | ✅ 已完成 |
+| 管理后台 | 管理员认证（失败锁定 + 黑名单）、RBAC 权限中心、角色/菜单管理、**管理员账号管理**、**操作日志查询**、操作审计 | ✅ 已完成 |
+| 商品模块 | 分类、商品列表、商品详情（SPU/SKU）、**Excel 批量导入** | ✅ 已完成 |
 | 购物车模块 | 加购、修改数量、勾选结算、清空 | ✅ 已完成 |
-| 订单模块 | 收货地址、下单、订单状态流转 | ✅ 已完成 |
+| 订单模块 | 收货地址、下单（快照 + 扣库存）、订单状态流转、后台发货 | ✅ 已完成 |
+| 支付模块 | 模拟支付、支付记录流水（幂等 + 条件更新防并发） | ✅ 已完成 |
+| 数据运营模块 | 加购未买召回圈人、选品分析、跑批任务日志 | ✅ 已完成 |
 
-> 数据库表结构已通过 Flyway 迁移脚本完成设计（V1~V4），含逻辑删除、乐观锁、订单快照等电商通用设计。
+> 数据库表结构已通过 Flyway 迁移脚本完成设计（V1~V7），含逻辑删除、乐观锁、订单快照等电商通用设计。
 
 ## 项目启动
 
@@ -112,6 +118,23 @@ mvn clean compile
 mvn -pl spring-shop-web -am spring-boot:run
 ```
 
+#### 关于 profile（重要）
+
+`spring.profiles.active` 默认是 **`dev`**（见 `application.yml` 的 `${SPRING_PROFILES_ACTIVE:dev}`），
+生产用 `SPRING_PROFILES_ACTIVE=prod` 覆盖。
+
+**运行时的 profile 只支持 `dev` 和 `prod`**，原因有两个：
+
+1. **数据源只在 `application-dev.yml` / `application-prod.yml` 里定义**，
+   `application.yml` 本身不含 `spring.datasource`。所以用别的 profile 启动会直接
+   报 `Failed to determine a suitable driver class`。
+2. **`logback-spring.xml` 里 `dev` / `prod` 各自定义 `<root>`**，另有 `!dev & !prod` 兜底分支。
+   若删掉兜底分支，用其他 profile（例如打错成 `develop`）启动时根 logger 会一个 appender 都没有，
+   应用**一行日志都不打印**，启动失败只剩一个退出码 1，无从排查。
+
+> 注意：`test` profile 的数据源在 `src/test/resources/application-test.yml`（测试作用域，**不会打进 jar**），
+> 因此它只用于 `mvn test`，**不能**用 `java -jar --spring.profiles.active=test` 启动。
+
 ### 4. 验证
 
 ```bash
@@ -124,7 +147,9 @@ curl http://localhost:6001/api/health
 
 ### 管理后台
 
-启动时自动创建超级管理员（数据库 admin_user 表为空时）：
+启动时**幂等补齐**初始数据（逐项「查不到就创建」，已存在的不会重复插入，也不会被覆盖）：
+超级管理员 `admin / admin123`、`ADMIN` 角色、全部内置菜单与按钮权限，以及管理员与角色、
+角色与菜单的关联。后续版本新增的权限标识重启后会自动写入已有库。
 
 ```bash
 # 管理员登录（默认：admin / admin123，上线后务必修改密码）
@@ -163,11 +188,12 @@ curl http://localhost:6001/api/user/me \
 
 ## 相关文档
 
-- [AGENTS.md](AGENTS.md) — 项目协作规范（分层架构、编码规范、提交约定）
+- [AGENTS.md](AGENTS.md) — 项目协作规范（分层架构、编码规范、错误码段位、HTTP 状态码分工、测试模板、提交约定）
 - [docs/user-module.md](docs/user-module.md) — 用户模块技术梳理（登录逻辑、认证链路、流程图）
-- [docs/admin-module.md](docs/admin-module.md) — 管理后台技术梳理（双过滤链、RBAC、Redis 登录加固、操作审计、架构取舍）
-- [docs/product-module.md](docs/product-module.md) — 商品模块技术梳理（SPU/SKU 模型、读写服务、分类树、测试基座）
+- [docs/admin-module.md](docs/admin-module.md) — 管理后台技术梳理（双过滤链、RBAC、Redis 登录加固、操作审计、账号管理、日志查询、导入设计、架构取舍）
+- [docs/product-module.md](docs/product-module.md) — 商品模块技术梳理（SPU/SKU 模型、读写服务、分类树、批量导入、测试基座）
 - [docs/cart-module.md](docs/cart-module.md) — 购物车模块技术梳理（物理删除决策、N+1 聚合、失效标记、测试基座）
 - [docs/order-module.md](docs/order-module.md) — 订单模块技术梳理（下单时序、库存条件扣减、快照设计、订单状态机）
+- [docs/superpowers/plans/2026-10-03-admin-user-log-import.md](docs/superpowers/plans/2026-10-03-admin-user-log-import.md) — 后台账号管理 + 日志查询 + 商品/管理员导入 实施计划
 - [docs/collaboration-plan.md](docs/collaboration-plan.md) — 基础框架评估与多人协作方案
 - [docs/test-accounts.md](docs/test-accounts.md) — 测试账号与本地环境信息备份（数据库连接、前后台账号、seed 数据）

@@ -1,6 +1,14 @@
 server:
   # 6001 端口，避免与其他本地项目冲突
   port: 6001
+  tomcat:
+    # 上传超限时，Tomcat 必须先「吞掉」剩余请求体，才能把响应正常写回给客户端。
+    # maxSwallowSize 默认只有 2MB，而这里的 max-request-size 是 10MB：
+    # 一旦被拒绝的请求体超过 2MB，Tomcat 会直接断开连接，
+    # 客户端只能看到 Broken pipe / chunked transfer encoding 之类的 I/O 错误，
+    # GlobalExceptionHandler 里的「上传文件过大」提示**根本没有机会返回**（实测确认）。
+    # 设为略大于 max-request-size，保证整个请求都能被吞掉、友好提示能正常送达。
+    max-swallow-size: 12MB
 
 spring:
   application:
@@ -11,6 +19,13 @@ spring:
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
+  # 文件上传上限：Excel 批量导入用。
+  # 注意：仅靠下面两项不够 —— 还必须配合 server.tomcat.max-swallow-size，
+  # 否则超限请求会被容器直接断连，GlobalExceptionHandler 的可读提示送不出去（见上）。
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
   # Redis：登录失败锁定、token 黑名单等能力依赖；生产通过环境变量覆盖
   data:
     redis:
@@ -61,10 +76,49 @@ miniapp:
   appid: ${MINIAPP_APPID:}
   secret: ${MINIAPP_SECRET:}
 
+# 管理后台：批量导入管理员时，「初始密码」列留空则使用该默认密码（生产建议用环境变量覆盖）
+admin:
+  import:
+    default-password: ${ADMIN_IMPORT_DEFAULT_PASSWORD:123456}
+
 # 订单超时自动取消：待付款订单超过该分钟数未支付，由定时任务自动取消并回滚库存
 order:
   timeout:
     cancel-minutes: 30
+
+# Excel 异步导入 / 导出任务
+# 设计要点：所有阈值配置化 —— 批大小、线程数这类参数和部署机器强相关，
+# 本地 4 核与生产 16 核的最优值差一个量级，硬编码就只能改代码重发。
+excel:
+  task:
+    # 总开关：关掉后提交任务直接报错（测试可用来避免异步线程干扰断言）
+    enabled: true
+    # 导入源文件与导出结果文件都落在这里，按 yyyyMMdd 分子目录、以任务号为文件名。
+    # 必须落在容器可写的本地盘：导出是「先写盘、后下载」，用临时目录而非内存，
+    # 十万行的结果文件不会把堆撑爆。
+    tmp-dir: ${EXCEL_TASK_TMP_DIR:${java.io.tmpdir}/spring-shop/excel}
+    # 独立线程池：导入导出是长耗时任务，混进默认线程池会拖死无关业务。
+    # 队列满时直接拒绝（不 CallerRuns，否则 HTTP 线程会亲自去跑几万行导入）
+    core-pool-size: 2
+    max-pool-size: 4
+    queue-capacity: 50
+    keep-alive-seconds: 120
+    # 导入落库批大小：一批多少行写一次库
+    import-batch-size: 500
+    # 导出分页大小：一页多少行写一次 Excel。这个值决定导出的内存上限
+    # （同一时刻只有「一页数据 + Fesod 百行写缓存」在内存里）
+    export-page-size: 5000
+    # 单次导入的数据行上限，超出直接报错，防止一个超大文件把库写穿
+    max-import-rows: 100000
+    # 失败明细最多保留条数，防止全错文件把明细表写爆
+    max-error-rows: 10000
+    # 每处理多少行回写一次进度，回写太频繁会给数据库带来无谓的写压力
+    progress-interval: 500
+    # 临时文件保留小时数，超期由清理任务删除
+    file-retain-hours: 24
+    # 清理任务：每天 03:30；zone 必须显式指定 —— cron 用 JVM 默认时区，容器通常是 UTC
+    cleanup-cron: "0 30 3 * * ?"
+    zone: Asia/Shanghai
 
 # 加购未买召回圈人：每天凌晨 4 点圈出「加购了但没买」的人群与商品，本轮只圈人、不发券
 stats:

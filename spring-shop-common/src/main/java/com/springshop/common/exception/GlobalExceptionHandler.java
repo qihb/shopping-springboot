@@ -9,6 +9,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 /**
  * 全局异常处理
@@ -35,6 +36,17 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public Result<Void> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
         return Result.fail(ResultCode.BAD_REQUEST);
+    }
+
+    /**
+     * 上传文件超过 spring.servlet.multipart.max-file-size 限制
+     *
+     * <p>单独处理是为了给出「文件过大」这种可操作的提示，
+     * 否则会被下面的兜底分支吞成「系统内部错误」，用户无从判断原因。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public Result<Void> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException e) {
+        return Result.fail(ResultCode.BAD_REQUEST.getCode(), "上传文件过大，请拆分后分批导入");
     }
 
     @ExceptionHandler(Exception.class)

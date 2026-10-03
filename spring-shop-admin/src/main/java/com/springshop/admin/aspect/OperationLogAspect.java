@@ -15,6 +15,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 操作日志切面：记录管理后台关键操作
@@ -28,8 +29,14 @@ public class OperationLogAspect {
 
     private static final Logger log = LoggerFactory.getLogger(OperationLogAspect.class);
 
-    /** 需要脱敏的敏感字段（密码等），记录日志时替换 */
-    private static final String[] SENSITIVE_FIELDS = {"password"};
+    /**
+     * 需要脱敏的字段：字段名包含 password 一律替换（覆盖 password / oldPassword / newPassword）
+     *
+     * <p>只匹配 {@code "password"} 是不够的——{@code AdminChangePasswordRequest} 的字段名是
+     * {@code oldPassword} / {@code newPassword}，用精确匹配会把明文密码写进审计日志。
+     */
+    private static final Pattern SENSITIVE_FIELD_PATTERN =
+            Pattern.compile("\"([^\"]*password[^\"]*)\"\\s*:\\s*\"[^\"]*\"", Pattern.CASE_INSENSITIVE);
 
     private final OperationLogMapper operationLogMapper;
     private final ObjectMapper objectMapper;
@@ -101,9 +108,8 @@ public class OperationLogAspect {
                 params.put("arg" + i, arg);
             }
             String json = objectMapper.writeValueAsString(params);
-            for (String field : SENSITIVE_FIELDS) {
-                json = json.replaceAll("\"" + field + "\":\"[^\"]*\"", "\"" + field + "\":\"***\"");
-            }
+            // 保留字段名、只把值替换为 ***，便于排查问题时看出「改了哪些字段」
+            json = SENSITIVE_FIELD_PATTERN.matcher(json).replaceAll("\"$1\":\"***\"");
             return truncate(json, 2000);
         } catch (Exception e) {
             return null;
@@ -111,10 +117,12 @@ public class OperationLogAspect {
     }
 
     /**
-     * 排除 Servlet/请求绑定等框架类型参数
+     * 排除 Servlet / 文件上传等框架类型参数：它们无法（也不需要）被 JSON 序列化
      */
     private boolean isFrameworkType(Object arg) {
-        return arg instanceof HttpServletRequest || arg instanceof jakarta.servlet.http.HttpServletResponse;
+        return arg instanceof HttpServletRequest
+                || arg instanceof jakarta.servlet.http.HttpServletResponse
+                || arg instanceof org.springframework.web.multipart.MultipartFile;
     }
 
     private String currentUsername() {

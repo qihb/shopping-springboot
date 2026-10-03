@@ -81,12 +81,12 @@
 
 ```
 spring-shop-admin
-├── controller   # 后台接口：登录、角色、菜单
-├── service      # 管理后台业务逻辑
+├── controller   # 后台接口：登录、管理员账号、角色、菜单、操作日志、个人中心
+├── service      # 管理后台业务逻辑（含管理员 Excel 导入）
 ├── mapper       # 管理员 / 角色 / 菜单 / 审计日志访问
 ├── entity       # admin_user / role / menu / role_menu / operation_log 等实体
-├── dto          # 入参：登录、角色保存、菜单保存、分配权限
-├── vo           # 出参：管理员信息、角色、菜单树
+├── dto          # 入参：登录、管理员增改、重置密码、分配角色、角色保存、菜单保存、日志查询
+├── vo           # 出参：管理员信息、角色、菜单树、导入结果、操作日志
 ├── security     # AdminUserPrincipal / AdminUserDetailsService / AdminJwtAuthenticationFilter
 ├── aspect       # @OperationLog 注解与切面
 └── config       # AdminDataInitializer 初始数据注入
@@ -247,20 +247,34 @@ admin_user
 
 当前还做了参数脱敏：
 
-- `password` 字段统一替换为 `***`
+- 所有**名字里含 `password` 的字段**（`password`、`oldPassword`、`newPassword`）统一替换为 `***`
 
-这是因为后台操作日志很容易进入文件、数据库、ELK，如果不先脱敏，密码会变成二次泄露源。
+考虑点：
+
+- 后台操作日志很容易进入文件、数据库、ELK，如果不先脱敏，密码会变成二次泄露源
+- 这里不能用「字段名精确等于 password」的写法：`oldPassword` / `newPassword` 是后加的字段，
+  精确匹配会漏掉它们，把明文密码写进 `operation_log`。当前实现用正则匹配：
+
+  ```java
+  Pattern.compile("\"([^\"]*password[^\"]*)\"\\s*:\\s*\"[^\"]*\"", Pattern.CASE_INSENSITIVE)
+  ```
+
+  即「JSON 里 key 含 password 的字符串字段，值一律替换」，新增同类字段无需再改切面。
+
+- 切面同时把 `MultipartFile` 排除在可序列化类型之外，避免导入接口把整个文件内容写进日志。
 
 ## 8. 初始化数据：为什么启动时自动创建 admin / admin123？
 
 当前做法：
 
-- 应用启动时，`AdminDataInitializer` 检查数据
+- 应用启动时，`AdminDataInitializer` 逐项「查不到就创建」（find-or-create）
 - 首次启动自动创建：
   - 超级管理员 `admin / admin123`
   - `ADMIN` 角色
-  - 系统管理菜单树
+  - 系统管理菜单树（含用户管理 / 角色管理 / 菜单管理 / 操作日志等按钮权限）
   - 角色与菜单、管理员与角色关联
+- 后续启动只补齐**缺失的**部分：新增的菜单、新增的按钮权限会自动写入老库，
+  已存在的授权不会被覆盖，也不会重复插入
 
 考虑点：
 
@@ -268,35 +282,303 @@ admin_user
 - **方便联调和演示**
 - **幂等执行**：避免每次启动重复塞数据
 
+> ⚠️ **这里踩过一个坑，值得记住**：最初的实现是「`admin_user` 表非空就整体跳过」。
+> 这个写法在第一次启动时没问题，但**之后新增的菜单和按钮权限永远不会写进已有的库**——
+> 结果是新加的 `@PreAuthorize("hasAuthority('...')")` 因为库里没有对应权限标识而永久 403，
+> 而且现象很难定位（接口、代码都对，就是没权限）。
+> 现在的实现以 `menu.permission_code` 作为幂等键逐项补齐，`ensureRoleMenus` 只增不减，
+> 既保证幂等，又保证新权限能自动下发。
+
+这个契约由 `AdminDataInitializerUpgradeIntegrationTest` 钉住，共 4 个用例：
+
+| 用例 | 模拟的场景 | 断言 |
+|------|-----------|------|
+| `deletedPermission_shouldBeRestoredOnNextStartup` | 老库里缺少某条权限（连同授权） | 权限被补齐，且同一 `permission_code` 只有 1 条记录、授权不重复 |
+| `missingRoleMenuGrant_shouldBeRestoredOnNextStartup` | 菜单在、授权丢了 | 授权被补回，菜单不被重复插入 |
+| `repeatedStartup_shouldNotDuplicateSeedData` | 已初始化完成的库上重复启动 2 次 | `menu` / `role` / `role_menu` / `admin_user` / `admin_user_role` 行数全部不变 |
+| `missingAdminRoleBinding_shouldBeRestoredOnNextStartup` | `admin` 的 ADMIN 角色绑定丢失 | 绑定被补齐 |
+
+测试用**原生 SQL 物理删除**来造「老库」——逻辑删除的行仍留在表里，模拟不出真实的升级场景。
+
+> 注意 `menu.permission_code` 上**没有唯一索引**（只有 `idx_menu_parent_id`），
+> 所以「同一权限被重复插入」不会被数据库拦住，只能靠初始化的幂等逻辑保证；
+> 这也是上面把 `count(permission_code) == 1` 作为断言的原因。
+> 而 `role_menu` / `admin_user_role` 上都有唯一键，重复授权会直接抛异常。
+
 上线时要注意：
 
 - 初始密码只能用于第一次进入系统
 - 实际生产建议首登强制改密，或通过部署脚本注入随机初始密码
+- 管理员导入的默认密码由 `admin.import.default-password` 配置（默认 `123456`，可用环境变量
+  `ADMIN_IMPORT_DEFAULT_PASSWORD` 覆盖）
+
+## 9. 管理员账号管理：为什么只禁用，不提供删除接口？
+
+当前做法：
+
+- 提供 新增 / 修改 / 启用停用 / 重置密码 / 分配角色，**没有 `DELETE`**
+- 需要「移除某人」时用停用（`status = 0`）
+
+考虑点：
+
+- `admin_user` 走的是**逻辑删除**（`is_deleted`），但 `username` 上的唯一索引
+  **并不排除已逻辑删除的行**。也就是说：删掉 `zhangsan` 之后，这个用户名**永远无法再被使用**。
+- 更糟的是这会让启动初始化器炸掉：`ensureAdminUser` 要保证 `admin` 存在，
+  如果 `admin` 曾被逻辑删除，再插入就会撞唯一键。
+- 从审计角度，管理员账号是**操作日志里的责任主体**。把它删掉会让历史日志失去归属，
+  排查「这条记录是谁改的」直接断线。
+- 所以对后台管理员来说，**「停用」在语义上完全覆盖「删除」**：不能登录、token 立即失效，
+  但身份和数据都还在。
+
+结论：与其提供一个会在数据层埋雷的删除接口，不如不提供。前端菜单里也不放删除按钮。
+
+## 10. 禁用为什么要立刻生效，而不是等 token 自然过期？
+
+JWT 是无状态的：签发之后，服务端默认无法收回。如果不做处理，「禁用某管理员」要等到他的
+token 过期才真正生效——这中间的窗口期可能是几小时。
+
+当前做法：
+
+- `AdminJwtAuthenticationFilter` 在每次请求时**不是只解析 token 就完事**，而是拿着 token 里的
+  用户名再调一次 `AdminUserDetailsService.loadUserByUsername(username)` 重新装载主体；
+- `loadUserByUsername` 里加了状态判断：
+
+  ```java
+  if (adminUser.getStatus() == null || adminUser.getStatus() != 1) {
+      throw new UsernameNotFoundException("管理员账号已被禁用: " + username);
+  }
+  ```
+
+  过滤器捕获异常后 `clearContext()`，请求随即被判定为未认证 → 401。
+
+考虑点：
+
+- **代价是一次查库**：但后台是低频管理流量，这个开销完全可以接受；
+- **换来的是权限实时性**：禁用、改角色、改权限都在下一次请求立即生效，
+  不需要额外维护一套「版本号 / 强制下线」机制；
+- 比引入 refresh token 或在线会话表要轻得多，符合当前阶段。
+
+> 注意：这套机制依赖「每次请求都回查主体」。如果哪天为了性能把它改成纯 token 解析，
+> 权限实时性就会丢失，必须同时补上别的失效手段。
+
+## 11. Excel 导入导出：为什么换成 Fesod，以及为什么必须异步
+
+### 11.1 选型：Fesod（原 EasyExcel 的 Apache 孵化版）
+
+父 POM 引入 `org.apache.fesod:fesod-sheet:2.0.2-incubating`（Spring Boot BOM 未托管，需显式指定版本），
+`spring-shop-common` 在其上封装 `ExcelSupport` / `ExcelStreamWriter` / `ExcelExportSupport`，
+业务模块**只写「列 → 字段」的映射与校验**，不碰 Fesod API。
+
+> ⚠️ `fesod-sheet` 会传递引入 POI 5.5.x。**不要再单独声明 `poi-ooxml`** ——
+> 两个 POI 版本共存会在运行期抛 `NoSuchMethodError`。
+
+最初用的是裸 POI，换掉的原因只有一个：**内存**。`WorkbookFactory.create` 会把整个工作簿解析成
+DOM 树驻留堆内存，一万行的 xlsx 轻松吃掉几百 MB，导入上限只能卡在千行级。
+Fesod 读走 SAX 事件流、逐行回调，写按批刷缓存，**内存占用与文件行数基本无关**，
+这才敢把上限放开到万行以上。
+
+用 Fesod 时三个必须知道的坑（都已在封装里处理）：
+
+| 坑 | 现象 | 处理 |
+|----|------|------|
+| 不指定文件类型 | Fesod 探测失败会**静默退化成 CSV 解析**，垃圾字节读成 0 行而不报错，用户拿到的是「导入成功但一条都没进去」 | 读之前显式给 `excelType`（`ExcelReadOptions.fileType`），按扩展名推断 |
+| `head()` 是列优先 | `builder.head(List<List<String>>)` 的外层 list 是**列**而不是行，传 `List.of(headers)` 会写出「3 行 × 1 列」的错位表头，多出来的行还会被当成数据读回来 | 统一走 `ExcelStreamWriter.ofHeaders`，内部做列优先转换 |
+| 零数据行不建 sheet | 一行都没有时 Fesod 不会创建 sheet，读回来报「Can not find any sheet!」 | 空集合也要 `write` 一次（首行触发建 sheet），保证「没数据」导出的是只有表头的合法文件 |
+
+### 11.2 异步：为什么不能同步做
+
+同步导入的问题是**上万行**：解析 + 校验 + BCrypt + 逐批落库要跑几十秒到几分钟，
+放在 HTTP 请求里必然超时，而且连接被占死。同步导出同理——十万行的结果集不可能塞进响应。
+
+所以导入导出全部改成「**受理 → 返回 taskNo → 后台线程执行 → 前端轮询 → 下载结果**」，
+通用框架放在 `spring-shop-common` 的 `excel.task` 包：
+
+| 组件 | 职责 |
+|------|------|
+| `ExcelTaskExecutor` | 受理 + 调度 + 状态兜底（`submitImport` / `submitExport`） |
+| `ExcelTaskService` | 任务台账读写、失败明细存取、文件清理（**不含调度**，避免循环依赖） |
+| `ExcelTaskContext` | 交给业务执行体的上下文：源文件、结果文件、条件还原、进度上报、失败明细 |
+| `ExcelFileStorage` | 临时文件存取（`{tmpDir}/{yyyyMMdd}/{taskNo}.{ext}`） |
+| `ExcelTaskController`（web 模块） | `/api/admin/excel-tasks`：列表 / 详情 / 下载 |
+
+几个非做不可的设计决定：
+
+- **任务状态落库**（`excel_task` 表），不放内存也不放 Redis。导入要跑几分钟，用户会刷新页面、
+  应用会滚动重启，放内存就是「一直转圈」；落库还顺带回答了「谁在什么时候导了什么」这个审计问题。
+- **上传文件先落盘**。异步化之后 HTTP 请求在返回 taskNo 时就结束了，`MultipartFile` 依赖的
+  容器临时文件会被回收，后台线程再读就是空流。所以受理阶段必须把内容拷到自己的目录，
+  文件名用「任务号 + 原扩展名」（用户文件名里的 `../` 会造成目录穿越，只作展示字段存库）。
+- **独立线程池**（`excel-task-*`），不共用 Spring 默认的 `applicationTaskExecutor`：
+  导入导出是长耗时任务，混进默认池会拖死无关业务。队列满时 `AbortPolicy` 直接拒绝并提示
+  「排队已满」——**不能用 `CallerRunsPolicy`**，那会让 HTTP 线程亲自去跑几万行导入。
+- **同一业务类型 + 同一提交人禁止并发任务**，否则连点几下就能把线程池打满。
+- **提交人身份在受理阶段取好**：`UserContext` 是 `ThreadLocal`，**不会**传播到异步线程。
+- **执行体不用 `@Transactional`**（跑在异步线程里，自调用不走代理），用 `TransactionTemplate`
+  做「批内原子、批间独立」，整批失败再降级为逐组 / 逐行重试，让单条唯一键冲突
+  降级为单行失败而不是整批失败。
+- **进度与失败明细都是缓冲写**：一万行导入如果每行都 `update` 一次 `excel_task`，
+  写压力比导入本身还大。按 `excel.task.progress-interval` 攒批再刷。
+- **执行体必须无条件收尾上报**。只在「有批次」时上报，会让「全部行都在校验阶段失败」的文件
+  以 `处理 0 行 / 失败 0 行` 收场，而失败明细里明明有内容。
+- **失败明细按需生成**，不落盘：它本质上是 `excel_task_error` 的一个视图，
+  下载时分页流式拼成 xlsx，内存与明细条数无关。
+- **下载是「流到流」**：Controller 直接写 `HttpServletResponse`，不返回 `ResponseEntity<byte[]>`，
+  否则整个文件会先进堆内存。返回 `void` 是文件下载接口的固有例外。
+
+### 11.3 阈值全部配置化（`excel.task.*`）
+
+批大小、线程数这类参数和部署机器强相关（本地 4 核与生产 16 核的最优值差一个量级），
+硬编码就只能改代码重发：
+
+| 配置 | 默认 | 作用 |
+|------|------|------|
+| `enabled` | true | 总开关，关掉后提交任务直接报错 |
+| `tmp-dir` | `${java.io.tmpdir}/spring-shop/excel` | 导入源文件与导出结果文件的落盘目录 |
+| `core-pool-size` / `max-pool-size` / `queue-capacity` | 2 / 4 / 50 | 独立线程池 |
+| `import-batch-size` | 500 | 导入落库批大小 |
+| `export-page-size` | 5000 | 导出分页大小（**决定导出的内存上限**） |
+| `max-import-rows` | 100000 | 单次导入数据行上限，超出直接报错而非截断 |
+| `max-error-rows` | 10000 | 失败明细最多落库条数，防止全错文件把明细表写爆 |
+| `progress-interval` | 500 | 每处理多少行回写一次进度 |
+| `file-retain-hours` / `cleanup-cron` / `zone` | 24 / `0 30 3 * * ?` / Asia/Shanghai | 临时文件保留与清理（`zone` 必须显式指定，cron 用 JVM 默认时区） |
+
+### 11.4 导入的几个共性设计
+
+| 设计点 | 说明 |
+|--------|------|
+| 部分成功 | 合法行照常入库，非法行逐行记录 `{行号, 原因}`，不让一行脏数据废掉整份文件。行级失败**不改变任务状态**（任务 `status` 只回答「跑完了没有、有没有整体失败」） |
+| 行号可定位 | `ExcelRow.rowNum` 用**用户看到的 Excel 行号**（表头是第 1 行，数据从第 2 行起），报错信息可以直接对着表格找 |
+| 先校验后占坑 | 唯一键（SKU 编码、用户名）在**所有字段校验通过之后**才标记占用，否则「因价格写错而失败的行」会把编码锁死，后面同编码的合法行被误报为重复 |
+| 组级失败要铺满 | 商品导入按商品名分组，分类解析失败会让该商品的**每一行**都给出原因，否则运营看不到问题出在哪一行 |
+| 模板即文档 | 每个导入接口都配 `GET .../import/template`，模板里带示例行（商品模板用两行同名商品演示「一个 SPU 多个 SKU」） |
+| 查重与索引口径一致 | `uk_sku_code` / `uk_username` 都**不排除逻辑删除的行**，所以占用查询用裸 SQL 不带 `is_deleted`，否则已删除记录占用的编码会被判为可用，最终在 insert 阶段撞唯一键 |
+
+### 11.5 大数据场景下的内存账
+
+| 路径 | 峰值内存 |
+|------|----------|
+| 商品导入 | 走 SAX 流式读，但**按商品名聚合**需要跨行数据，所以数据行驻留内存（上限 `max-import-rows`，十万行 `ExcelRow` 约几十 MB） |
+| 管理员导入 | **真正流式**：模板没有跨行聚合需求，边读边攒批、批满即落库。峰值 = 一批（默认 500 行）+ Fesod 解析缓冲，**与文件总行数无关** |
+| 任意导出 | 一页数据（默认 5000 行）+ Fesod 百行写缓存，**与总量无关**；十万行与一千行导出的内存占用基本相同 |
+| 结果下载 | 文件到响应的流式拷贝，**与文件大小无关** |
 
 ## 四、接口总览
 
-### 1. 后台认证
+> 权限列是 `@PreAuthorize("hasAuthority('...')")` 里用的权限标识，也就是 `menu.permission_code`。
+> 这些标识全部由 `AdminDataInitializer` 幂等注入，新增接口时记得同步加进去，否则永远 403。
 
-- `POST /api/admin/auth/login`
-- `POST /api/admin/auth/logout`
-- `GET /api/admin/auth/me`
+### 1. 后台认证 `/api/admin/auth`
 
-### 2. 角色管理
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| POST | `/login` | 匿名 | 用户名密码登录，返回 token + 主体信息 |
+| POST | `/logout` | 匿名 | token 进 Redis 黑名单 |
+| GET | `/me` | 需登录 | 当前管理员信息（含角色、权限标识） |
 
-- `GET /api/admin/roles`
-- `GET /api/admin/roles/all`
-- `POST /api/admin/roles`
-- `PUT /api/admin/roles/{id}`
-- `DELETE /api/admin/roles/{id}`
-- `POST /api/admin/roles/{id}/menus`
-- `GET /api/admin/roles/{id}/menus`
+### 2. 个人中心 `/api/admin/profile`
 
-### 3. 菜单管理
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| PUT | `/password` | **需登录即可，无权限标识** | 修改自己的密码，需校验原密码 |
 
-- `GET /api/admin/menus/tree`
-- `POST /api/admin/menus`
-- `PUT /api/admin/menus/{id}`
-- `DELETE /api/admin/menus/{id}`
+> 两个刻意的设计：① 不放在 `/api/admin/auth/**` 下，因为该前缀在 `SecurityConfig` 里是 `permitAll`，
+> 放进去会变成匿名可改密码；② 不加 `@PreAuthorize`，因为**新建的管理员可能还没有任何角色**，
+> 若要求权限标识，他连自己的初始密码都改不了。
+
+### 3. 管理员账号管理 `/api/admin/users`
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/` | `system:user:list` | 分页查询，支持用户名 / 姓名 / 状态筛选 |
+| GET | `/{id}` | `system:user:list` | 详情（含 roleIds / roleNames） |
+| POST | `/` | `system:user:create` | 新增管理员（可同时指定角色） |
+| PUT | `/{id}` | `system:user:update` | 修改姓名 / 手机号 / 状态 |
+| PUT | `/{id}/status` | `system:user:update` | 启用停用 |
+| PUT | `/{id}/password` | `system:user:reset` | 重置密码（管理员操作，不需原密码） |
+| PUT | `/{id}/roles` | `system:user:assign` | 分配角色（全量覆盖） |
+| POST | `/import` | `system:user:import` | Excel 批量导入 |
+| GET | `/import/template` | `system:user:import` | 下载导入模板 |
+
+**没有 DELETE**：原因见上文「## 9」。停用即等价于删除。
+
+**不能对自己停用**：`updateStatus` / `update` 会校验目标 id 是否等于当前登录管理员，
+命中则返回 `5008 ADMIN_SELF_OPERATION_FORBIDDEN`，防止把自己锁在系统外。
+
+**为什么 `PUT /{id}` 不含密码和角色**：密码走 `/{id}/password`、角色走 `/{id}/roles`。
+拆开是为了让「改个手机号」这种低危操作不会被顺带用来提权，权限边界更清楚。
+
+**导入模板 6 列**（一行一个管理员）：
+
+```
+用户名* | 姓名 | 手机号 | 角色编码*(多个用逗号分隔) | 状态(1启用/0禁用) | 初始密码(留空用默认密码)
+```
+
+- 角色编码支持 `,` `，` `、` `;` `；` 和空白做分隔符（正则 `[,，、;；\s]+`），
+  不要求运营记住某一种分隔符。
+- 初始密码留空时用 `admin.import.default-password`（默认 `123456`，可用环境变量
+  `ADMIN_IMPORT_DEFAULT_PASSWORD` 覆盖）；填写时长度至少 6 位。
+- 角色编码必须已存在且启用，否则该行失败。
+- 行数上限 **500**（比商品导入的 1000 更保守，因为每行都要额外做角色解析与密码加密）。
+- 部分成功：合法行落库，非法行返回 `{rowNum, 原因}`。
+
+### 4. 操作日志 `/api/admin/operation-logs`
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/` | `system:log:list` | 分页查询，支持模块 / 用户名 / 操作 / 状态 / 时间区间筛选 |
+| POST | `/export` | `system:log:list` | 异步导出（JSON body，筛选字段与列表页一致），返回 `Result<ExcelTaskVO>` |
+
+- 只读，不提供删除和修改：审计日志可改就失去意义了。
+- 查询接口本身**刻意不加 `@OperationLog`**，否则「查日志」这个动作会不断往日志表里写日志。
+- 时间参数格式为 `yyyy-MM-dd HH:mm:ss`，排序固定 `create_time DESC, id DESC`。
+- 导出用 **POST + JSON body**（而不是 GET + 查询参数）：四个导出接口（商品 / 管理员 / 操作日志 / 订单）
+  形状必须一致，前端「导出」按钮才能共用一套调用代码；且导出是「创建一个任务」，
+  语义上本来就不是幂等的读。时间字段由全局 Jackson 配置解析（见 `JacksonConfig`），
+  所以 `OperationLogExportQuery` 上**不需要** `@DateTimeFormat`——那是给表单/查询参数绑定用的。
+
+### 5. 角色管理 `/api/admin/roles`
+
+| 方法 | 路径 | 权限 |
+|------|------|------|
+| GET | `/` | `system:role:list` |
+| GET | `/all` | `system:role:list` |
+| POST | `/` | `system:role:create` |
+| PUT | `/{id}` | `system:role:update` |
+| DELETE | `/{id}` | `system:role:delete` |
+| POST | `/{id}/menus` | `system:role:assign` |
+| GET | `/{id}/menus` | `system:role:list` |
+
+### 6. 菜单管理 `/api/admin/menus`
+
+| 方法 | 路径 | 权限 |
+|------|------|------|
+| GET | `/tree` | `system:menu:list` |
+| POST | `/` | `system:menu:create` |
+| PUT | `/{id}` | `system:menu:update` |
+| DELETE | `/{id}` | `system:menu:delete` |
+
+### 7. 商品管理（spring-shop-product 模块，挂在后台链下）
+
+| 方法 | 路径 | 权限 |
+|------|------|------|
+| GET/POST/PUT/DELETE | `/api/admin/categories/**` | `product:category:*` |
+| GET/POST/PUT | `/api/admin/products/**` | `product:product:list / create / update` |
+| PUT | `/api/admin/products/{id}/status` | `product:product:update` |
+| POST | `/api/admin/products/import` | `product:product:import` |
+| GET | `/api/admin/products/import/template` | `product:product:import` |
+
+### 8. 订单管理（spring-shop-order 模块）
+
+| 方法 | 路径 | 权限 |
+|------|------|------|
+| GET | `/api/admin/orders` | `order:order:list` |
+| PUT | `/api/admin/orders/{id}/ship` | `order:order:ship` |
+
+### 9. 数据运营（spring-shop-stats 模块）
+
+| 方法 | 路径 | 权限 |
+|------|------|------|
+| GET/POST | `/api/admin/stats/recall/**` | `stats:recall:build` |
 
 ## 五、数据库与迁移
 
@@ -318,18 +600,38 @@ admin_user
 
 ## 六、当前实现的边界与后续补充建议
 
-当前后台已经具备“能生产化起步”的基础设施，但还没做完这些：
+### 已交付
 
-1. **管理员用户管理**：新增/禁用/重置密码/分配角色
-2. **商品管理后台**：分类、SPU、SKU、上下架、库存调整
-3. **订单管理后台**：订单查询、发货、售后、状态流转
-4. **操作日志查询接口**：现在只落库，还没有后台查询页
-5. **更完整的安全能力**：
-   - 首登改密
+- ✅ **管理员用户管理**：新增 / 修改 / 启用停用 / 重置密码 / 分配角色 / Excel 批量导入（**无删除**，见「## 9」）
+- ✅ **操作日志查询**：分页 + 多条件筛选，只读
+- ✅ **个人中心改密**：校验原密码
+- ✅ **商品管理后台**：分类、SPU、SKU、上下架，含 **Excel 批量导入**
+- ✅ **订单管理后台**：订单查询、发货
+- ✅ **数据运营**：加购未买召回圈人
+- ✅ **权限实时性**：禁用 / 改角色下次请求即生效（见「## 10」）
+- ✅ **鉴权失败的 HTTP 语义**：`@PreAuthorize` 拒绝返回 403 + `Result.fail(FORBIDDEN)`，
+  不再被兜底成「系统内部错误」（见 AGENTS.md「HTTP 状态码与业务码的分工」）
+- ✅ **初始数据的升级路径**：老库重复启动时幂等补齐缺失的菜单 / 权限 / 授权，
+  新增权限能自动下发（见「## 8」，由 `AdminDataInitializerUpgradeIntegrationTest` 钉住）
+- ✅ **权限码覆盖率**：从运行时容器扫描全部 `@PreAuthorize`，与 `menu` 表对账，
+  断言「已注册 + 已授予 ADMIN」，把「新增接口忘了注册权限 → 永久 403」变成 CI 红灯
+  （由 `AdminPermissionCoverageIntegrationTest` 钉住）
+
+### 还没做
+
+1. **更完整的安全能力**：
+   - 首登强制改密
    - 定期改密
    - 登录验证码
    - IP 白名单 / 限流
    - refresh token / 单点登录策略
+2. **管理员的「删除」诉求**：如果确实需要释放用户名，正确做法是
+   **新增一个独立的「账号回收」流程**（先改名为 `zhangsan_deleted_20261003` 之类的墓碑名，
+   再逻辑删除），而不是直接删行。当前刻意不做。
+3. **导入的异步化**：现在导入是同步请求内完成，行数上限 1000（商品）/ 500（管理员）。
+   如果将来要支持上万行，需要改成「上传 → 异步任务 → 结果下载」的模式。
+4. **前端页面**：本文只覆盖后端接口，管理后台前端（菜单渲染、权限按钮、导入向导）不在本仓库。
+5. **操作日志的归档**：`operation_log` 目前只增不清理，长期需要按月归档或分区。
 
 ## 七、一句话结论
 

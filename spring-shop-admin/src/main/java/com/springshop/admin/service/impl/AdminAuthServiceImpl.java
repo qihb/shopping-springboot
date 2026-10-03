@@ -107,6 +107,22 @@ public class AdminAuthServiceImpl implements AdminAuthService {
         return toInfoVO(adminUser);
     }
 
+    @Override
+    public void changePassword(Long adminUserId, String oldPassword, String newPassword) {
+        AdminUser adminUser = adminUserMapper.selectById(adminUserId);
+        if (adminUser == null) {
+            throw new BusinessException(ResultCode.ADMIN_USER_NOT_FOUND);
+        }
+        // 校验原密码：避免 token 泄露后攻击者直接改密把账号锁死
+        if (!passwordEncoder.matches(oldPassword, adminUser.getPassword())) {
+            throw new BusinessException(ResultCode.ADMIN_OLD_PASSWORD_ERROR);
+        }
+        AdminUser update = new AdminUser();
+        update.setId(adminUserId);
+        update.setPassword(passwordEncoder.encode(newPassword));
+        adminUserMapper.updateById(update);
+    }
+
     /**
      * 组装管理员信息 VO（含角色编码与权限标识）
      */

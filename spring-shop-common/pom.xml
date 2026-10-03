@@ -50,5 +50,20 @@
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-jackson</artifactId>
         </dependency>
+        <!-- Excel 读写：ExcelSupport 是纯技术工具（无业务逻辑），放在 common 供各业务模块复用。
+             选 Fesod（Apache 孵化版，原 EasyExcel 血统）而非裸 POI，原因是流式读写：
+             读用 SAX 逐行回调、写按批刷缓存，上万行的导入导出不会把整表堆进堆内存。
+             业务模块只依赖 common 的 ExcelSupport / ExcelStreamWriter，不直接引 Fesod。 -->
+        <dependency>
+            <groupId>org.apache.fesod</groupId>
+            <artifactId>fesod-sheet</artifactId>
+        </dependency>
+        <!-- ExcelSupport / ExcelStreamWriter 是纯技术工具，读写正确性用单测兜住，
+             不依赖 Spring 容器 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

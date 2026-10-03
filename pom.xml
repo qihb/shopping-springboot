@@ -36,6 +36,12 @@
         <springdoc.version>2.8.9</springdoc.version>
         <swagger-annotations.version>2.2.28</swagger-annotations.version>
         <jjwt.version>0.12.6</jjwt.version>
+        <!-- Excel 读写（批量导入 / 导出）；Spring Boot BOM 未托管 Fesod，需显式指定版本。
+             Fesod 是 POI 的流式封装（原 EasyExcel / FastExcel 的 Apache 孵化版），
+             读走 SAX、写走分批缓存，是「上万行导入导出」场景的选型依据。
+             注意：fesod-sheet 会传递引入 POI 5.5.x，不要再单独声明 poi-ooxml，
+             否则两个 POI 版本共存会出现 NoSuchMethodError。 -->
+        <fesod.version>2.0.2-incubating</fesod.version>
     </properties>
 
     <dependencyManagement>
@@ -118,6 +124,12 @@
                 <groupId>io.swagger.core.v3</groupId>
                 <artifactId>swagger-annotations-jakarta</artifactId>
                 <version>${swagger-annotations.version}</version>
+            </dependency>
+            <!-- Excel 读写：fesod-sheet 同时覆盖 xlsx（SAX 流式读 / 分批写）与 xls、csv -->
+            <dependency>
+                <groupId>org.apache.fesod</groupId>
+                <artifactId>fesod-sheet</artifactId>
+                <version>${fesod.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
