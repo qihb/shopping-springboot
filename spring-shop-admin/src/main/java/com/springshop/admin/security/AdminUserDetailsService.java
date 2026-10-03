@@ -51,6 +51,11 @@ public class AdminUserDetailsService implements UserDetailsService {
         if (adminUser == null) {
             throw new UsernameNotFoundException("管理员不存在: " + username);
         }
+        // 禁用状态在每次请求重建认证主体时校验，使「禁用」立即生效，
+        // 而不是等已签发的 token 自然过期（JWT 无状态，没有这一步就撤销不了登录态）
+        if (adminUser.getStatus() == null || adminUser.getStatus() != 1) {
+            throw new UsernameNotFoundException("管理员账号已被禁用: " + username);
+        }
         return new AdminUserPrincipal(adminUser, loadPermissions(adminUser.getId()));
     }
 

@@ -23,4 +23,9 @@ public interface AdminAuthService {
      * 获取当前登录管理员信息（含角色与权限）
      */
     AdminUserInfoVO getCurrentAdmin(Long adminUserId);
+
+    /**
+     * 修改当前登录管理员自己的密码：需校验原密码，防止 token 被盗后直接改密锁号
+     */
+    void changePassword(Long adminUserId, String oldPassword, String newPassword);
 }

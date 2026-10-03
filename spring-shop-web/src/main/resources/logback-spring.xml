@@ -18,11 +18,12 @@
     <!-- 全量日志文件：按天滚动，保留 30 天，单文件最大 100MB（[%X{traceId}] 为链路追踪 ID，由 TraceIdFilter 写入 MDC） -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${LOG_DIR}/spring-shop.log</file>
-        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+        <!-- 用 SizeAndTimeBasedRollingPolicy（而不是 TimeBasedRollingPolicy + 内嵌
+             SizeAndTimeBasedFNATP）：后者自 Logback 1.2.x 起已废弃，每次启动都会刷 4 行
+             「class was renamed / is deprecated」告警。两者行为等价，%i 仍是必需的占位符。 -->
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
             <fileNamePattern>${LOG_DIR}/spring-shop.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
-            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
-                <maxFileSize>100MB</maxFileSize>
-            </timeBasedFileNamingAndTriggeringPolicy>
+            <maxFileSize>100MB</maxFileSize>
             <maxHistory>30</maxHistory>
         </rollingPolicy>
         <encoder>
@@ -37,11 +38,9 @@
         <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
             <level>ERROR</level>
         </filter>
-        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
             <fileNamePattern>${LOG_DIR}/spring-shop-error.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
-            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
-                <maxFileSize>100MB</maxFileSize>
-            </timeBasedFileNamingAndTriggeringPolicy>
+            <maxFileSize>100MB</maxFileSize>
             <maxHistory>30</maxHistory>
         </rollingPolicy>
         <encoder>
@@ -62,6 +61,29 @@
     <!-- 生产环境：只写文件不刷屏，根级别 info（ERROR_FILE 自带 ThresholdFilter 兜住错误） -->
     <springProfile name="prod">
         <root level="info">
+            <appender-ref ref="FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </root>
+    </springProfile>
+
+    <!--
+      兜底分支：既不是 dev 也不是 prod 的其他 profile（例如 test，以及将来新增的 staging / uat）
+      也必须显式挂上 appender。
+
+      为什么必须有这一段：Logback 在「找到了配置文件但没有任何 <root> 生效」时，
+      不会退回默认控制台输出，而是让根 logger 一个 appender 都没有 —— 结果就是
+      应用照常启动、但**一行日志都不打印**。日志配置本身还会打印
+      「Appender named [CONSOLE] not referenced」这种容易被忽略的告警。
+      这种情况下启动失败（如配置错误、连不上数据库）会完全没有输出，
+      退出码只有 1，排查时无从下手。
+
+      这里用取反写法而不是在 <configuration> 里直接写一个 <root>，
+      是因为 Logback 对多个 <root> 是「累加 appender」而非覆盖，
+      直接写会导致 dev/prod 下 appender 被重复挂载、日志打印两遍。
+    -->
+    <springProfile name="!dev &amp; !prod">
+        <root level="info">
+            <appender-ref ref="CONSOLE"/>
             <appender-ref ref="FILE"/>
             <appender-ref ref="ERROR_FILE"/>
         </root>

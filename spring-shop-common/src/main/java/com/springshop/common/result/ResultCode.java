@@ -29,6 +29,7 @@ public enum ResultCode {
     PRODUCT_SKU_CODE_DUPLICATE(2012, "SKU 编码重复"),
     PRODUCT_SKU_EMPTY(2013, "商品至少需要一个 SKU"),
     PRODUCT_OFF_SHELF(2014, "商品已下架"),
+    PRODUCT_IMPORT_FILE_INVALID(2020, "导入文件不合法，请下载模板后重新填写"),
 
     // 业务码：购物车模块（3000 段）
     CART_ITEM_NOT_FOUND(3001, "购物车条目不存在"),
@@ -50,6 +51,10 @@ public enum ResultCode {
     ADMIN_DISABLED(5003, "账号已被禁用"),
     ADMIN_LOCKED(5004, "登录失败次数过多，账号已临时锁定，请稍后再试"),
     ADMIN_TOKEN_INVALID(5005, "登录已失效，请重新登录"),
+    ADMIN_USERNAME_EXISTS(5006, "管理员用户名已存在"),
+    ADMIN_OLD_PASSWORD_ERROR(5007, "原密码错误"),
+    ADMIN_SELF_OPERATION_FORBIDDEN(5008, "不能对当前登录的管理员账号执行该操作"),
+    ADMIN_IMPORT_FILE_INVALID(5009, "导入文件不合法，请下载模板后重新填写"),
     ADMIN_ROLE_NOT_FOUND(5010, "角色不存在"),
     ADMIN_ROLE_CODE_EXISTS(5011, "角色编码已存在"),
     ADMIN_ROLE_IN_USE(5012, "角色已分配给管理员，不可删除"),

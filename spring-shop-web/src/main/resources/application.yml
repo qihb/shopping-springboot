@@ -1,6 +1,14 @@
 server:
   # 6001 端口，避免与其他本地项目冲突
   port: 6001
+  tomcat:
+    # 上传超限时，Tomcat 必须先「吞掉」剩余请求体，才能把响应正常写回给客户端。
+    # maxSwallowSize 默认只有 2MB，而这里的 max-request-size 是 10MB：
+    # 一旦被拒绝的请求体超过 2MB，Tomcat 会直接断开连接，
+    # 客户端只能看到 Broken pipe / chunked transfer encoding 之类的 I/O 错误，
+    # GlobalExceptionHandler 里的「上传文件过大」提示**根本没有机会返回**（实测确认）。
+    # 设为略大于 max-request-size，保证整个请求都能被吞掉、友好提示能正常送达。
+    max-swallow-size: 12MB
 
 spring:
   application:
@@ -11,6 +19,13 @@ spring:
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
+  # 文件上传上限：Excel 批量导入用。
+  # 注意：仅靠下面两项不够 —— 还必须配合 server.tomcat.max-swallow-size，
+  # 否则超限请求会被容器直接断连，GlobalExceptionHandler 的可读提示送不出去（见上）。
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
   # Redis：登录失败锁定、token 黑名单等能力依赖；生产通过环境变量覆盖
   data:
     redis:
@@ -60,6 +75,11 @@ jwt:
 miniapp:
   appid: ${MINIAPP_APPID:}
   secret: ${MINIAPP_SECRET:}
+
+# 管理后台：批量导入管理员时，「初始密码」列留空则使用该默认密码（生产建议用环境变量覆盖）
+admin:
+  import:
+    default-password: ${ADMIN_IMPORT_DEFAULT_PASSWORD:123456}
 
 # 订单超时自动取消：待付款订单超过该分钟数未支付，由定时任务自动取消并回滚库存
 order:
