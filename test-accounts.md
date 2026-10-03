@@ -20,7 +20,7 @@ mysql -h127.0.0.1 -P3306 -uroot -proot --default-character-set=utf8mb4 spring_sh
 
 ## 二、管理后台账号
 
-启动时由 `AdminDataInitializer` 自动创建（`admin_user` 表为空时）：
+启动时由 `AdminDataInitializer` 幂等补齐（缺什么补什么，已存在的不覆盖、不重复插入）：
 
 | 用户名 | 密码 | 角色 |
 |------|------|------|
