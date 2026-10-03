@@ -169,3 +169,6 @@ agent_created: true
   类型解析助手的口径。**写任何 Fesod 读写代码之前先读它。**
 - `references/task-internals.md` —— 任务表设计理由、状态机、`excel.task.*` 逐项含义、
   worker 契约、两个线程亲和性陷阱。**改任务表结构或配置语义之前先读它。**
+- `references/frontend-integration.md` —— 全部导入/导出接口清单（含权限码与入参形态）、
+  `ExcelTaskVO` 字段用法、轮询的四个纪律、**下载的三个坑**（不能 `<a href>`、`filename*`
+  解析、失败时 HTTP 200 但响应体是 JSON）、后端约束对照表。**前端对接或写前端联调文档之前先读它。**
