@@ -1,14 +1,17 @@
 package com.springshop.product.controller.admin;
 
+import com.springshop.common.excel.task.ExcelTaskVO;
 import com.springshop.common.result.PageResult;
 import com.springshop.common.result.Result;
+import com.springshop.common.security.UserContext;
+import com.springshop.product.product.dto.ProductExportQuery;
 import com.springshop.product.product.dto.ProductPageQuery;
 import com.springshop.product.product.dto.ProductSaveRequest;
+import com.springshop.product.product.service.ProductExportService;
 import com.springshop.product.product.service.ProductImportService;
 import com.springshop.product.product.service.ProductManageService;
 import com.springshop.product.product.service.ProductQueryService;
 import com.springshop.product.product.vo.ProductDetailVO;
-import com.springshop.product.product.vo.ProductImportResultVO;
 import com.springshop.product.product.vo.ProductListVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -46,13 +49,16 @@ public class AdminProductController {
     private final ProductManageService productManageService;
     private final ProductQueryService productQueryService;
     private final ProductImportService productImportService;
+    private final ProductExportService productExportService;
 
     public AdminProductController(ProductManageService productManageService,
                                   ProductQueryService productQueryService,
-                                  ProductImportService productImportService) {
+                                  ProductImportService productImportService,
+                                  ProductExportService productExportService) {
         this.productManageService = productManageService;
         this.productQueryService = productQueryService;
         this.productImportService = productImportService;
+        this.productExportService = productExportService;
     }
 
     @Operation(summary = "后台商品分页")
@@ -92,11 +98,13 @@ public class AdminProductController {
         return Result.success();
     }
 
-    @Operation(summary = "批量导入商品", description = "一行一个 SKU，同名商品自动聚合为一个 SPU；部分成功，非法行在结果中给出原因")
+    @Operation(summary = "批量导入商品",
+            description = "异步受理：一行一个 SKU，同名商品自动聚合为一个 SPU。"
+                    + "立即返回任务号，进度与失败明细在任务中心查看")
     @PreAuthorize("hasAuthority('product:product:import')")
     @PostMapping("/import")
-    public Result<ProductImportResultVO> importProducts(@RequestPart("file") MultipartFile file) {
-        return Result.success(productImportService.importProducts(file));
+    public Result<ExcelTaskVO> importProducts(@RequestPart("file") MultipartFile file) {
+        return Result.success(productImportService.submitImport(file, UserContext.getUserId()));
     }
 
     @Operation(summary = "下载商品导入模板")
@@ -111,5 +119,14 @@ public class AdminProductController {
                 .filename("商品导入模板.xlsx", StandardCharsets.UTF_8)
                 .build());
         return new ResponseEntity<>(content, headers, HttpStatus.OK);
+    }
+
+    @Operation(summary = "导出商品",
+            description = "异步受理：按筛选条件导出，传 ids 则只导出选中的商品。"
+                    + "立即返回任务号，完成后从任务中心下载文件")
+    @PreAuthorize("hasAuthority('product:product:list')")
+    @PostMapping("/export")
+    public Result<ExcelTaskVO> export(@RequestBody ProductExportQuery query) {
+        return Result.success(productExportService.submitExport(query, UserContext.getUserId()));
     }
 }

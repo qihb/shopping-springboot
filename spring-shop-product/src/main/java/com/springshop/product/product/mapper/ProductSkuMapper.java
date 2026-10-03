@@ -2,6 +2,7 @@ package com.springshop.product.product.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.springshop.product.product.entity.ProductSku;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -15,6 +16,17 @@ import java.util.List;
  */
 @Mapper
 public interface ProductSkuMapper extends BaseMapper<ProductSku> {
+
+    /**
+     * 批量插入 SKU（批量导入用），调用前需保证每个 SKU 的 productId 已回填
+     */
+    @Insert("<script>"
+            + "INSERT INTO product_sku (product_id, sku_code, specs, price, original_price, stock, status) VALUES "
+            + "<foreach collection='list' item='s' separator=','>"
+            + "(#{s.productId}, #{s.skuCode}, #{s.specs}, #{s.price}, #{s.originalPrice}, #{s.stock}, #{s.status})"
+            + "</foreach>"
+            + "</script>")
+    int insertBatch(@Param("list") List<ProductSku> skus);
 
     /**
      * 条件扣减库存：影响行数 0 表示库存不足，由调用方判定并抛业务异常

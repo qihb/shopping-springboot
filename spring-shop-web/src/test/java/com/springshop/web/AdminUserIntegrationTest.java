@@ -2,6 +2,7 @@ package com.springshop.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.springshop.common.excel.ExcelReadOptions;
 import com.springshop.common.excel.ExcelRow;
 import com.springshop.common.excel.ExcelSupport;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,7 +14,6 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.MediaType;
-import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,31 +28,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 管理员账号管理 + 操作日志查询 + 管理员导入 集成测试
+ * 管理员账号管理 + 操作日志查询 集成测试
  *
  * <p>覆盖 Controller → Service → Mapper 全链路。初始数据由 {@code AdminDataInitializer} 启动时注入
  * （admin / admin123 + ADMIN 角色 + 全部内置菜单权限）。
  *
  * <p>测试环境无 Redis，用 {@link MockBean} 替换 StringRedisTemplate。
+ *
+ * <p><b>批量导入 / 导出不在这里</b>：它们已改为异步任务（提交后由 excel-task 线程池执行），
+ * 而本类用 {@code @Transactional} 保证用例互不干扰 —— 测试事务对异步线程不可见，
+ * 两者天然冲突。异步导入导出由 {@code ExcelTaskIntegrationTest} 专门覆盖。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Transactional
 class AdminUserIntegrationTest {
-
-    private static final String XLSX_CONTENT_TYPE =
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-
-    /** 与 AdminUserImportServiceImpl.HEADERS 保持一致（读取时表头会被跳过，但保持一致可防将来加表头校验时误报） */
-    private static final List<String> IMPORT_HEADERS = List.of(
-            "用户名*", "姓名", "手机号", "角色编码*(多个用逗号分隔)", "状态(1启用/0禁用)", "初始密码(留空用默认密码)");
 
     @Autowired
     private MockMvc mockMvc;
@@ -282,39 +278,6 @@ class AdminUserIntegrationTest {
     }
 
     @Test
-    void importAdminUsers_shouldReportPartialSuccess() throws Exception {
-        String token = loginAsAdmin();
-        byte[] content = ExcelSupport.write("管理员导入模板", IMPORT_HEADERS, List.of(
-                List.of("import01", "导入一", "13800000001", "ADMIN", "1", ""),
-                List.of("import02", "导入二", "13800000002", "NO_SUCH_ROLE", "1", "")));
-
-        JsonNode data = readJson(mockMvc.perform(multipart("/api/admin/users/import")
-                        .file(new MockMultipartFile("file", "管理员.xlsx", XLSX_CONTENT_TYPE, content))
-                        .header("Authorization", bearer(token)))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString()).get("data");
-
-        assertEquals(2, data.get("totalRows").asInt());
-        assertEquals(1, data.get("successCount").asInt());
-        assertEquals(1, data.get("failCount").asInt());
-        assertEquals(3, data.get("errors").get(0).get("rowNum").asInt());
-    }
-
-    @Test
-    void importAdminUsers_withNonExcelFile_shouldReturnFileInvalid() throws Exception {
-        String token = loginAsAdmin();
-
-        JsonNode json = readJson(mockMvc.perform(multipart("/api/admin/users/import")
-                        .file(new MockMultipartFile("file", "管理员.txt", MediaType.TEXT_PLAIN_VALUE,
-                                "not excel".getBytes()))
-                        .header("Authorization", bearer(token)))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString());
-
-        assertEquals(5009, json.get("code").asInt());
-    }
-
-    @Test
     void downloadImportTemplate_shouldReturnParseableWorkbook() throws Exception {
         String token = loginAsAdmin();
 
@@ -324,7 +287,8 @@ class AdminUserIntegrationTest {
                 .andReturn().getResponse().getContentAsByteArray();
 
         assertTrue(content.length > 0);
-        List<ExcelRow> rows = ExcelSupport.read(new ByteArrayInputStream(content), 10);
+        List<ExcelRow> rows = ExcelSupport.readAll(new ByteArrayInputStream(content),
+                ExcelReadOptions.defaults());
         assertEquals(1, rows.size());
         assertEquals("operator01", rows.get(0).cell(0));
     }

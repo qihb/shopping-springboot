@@ -11,6 +11,7 @@ import com.springshop.common.result.ResultCode;
 import com.springshop.common.security.RedisKeys;
 import com.springshop.product.category.entity.ProductCategory;
 import com.springshop.product.category.mapper.ProductCategoryMapper;
+import com.springshop.product.product.dto.ProductExportQuery;
 import com.springshop.product.product.dto.ProductPageQuery;
 import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductImage;
@@ -94,6 +95,31 @@ public class ProductQueryServiceImpl implements ProductQueryService {
         query.setStatus(1);
         IPage<Product> page = productMapper.selectPage(query.toPage(), buildProductQueryWrapper(query, true));
         return buildListPageResult(page);
+    }
+
+    @Override
+    public List<ProductListVO> adminExportPage(ProductExportQuery query, long current, long pageSize) {
+        LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+        if (query != null) {
+            if (query.getIds() != null && !query.getIds().isEmpty()) {
+                // 「导出选中」优先于其他条件：用户勾了行就是明确的意图
+                wrapper.in(Product::getId, query.getIds());
+            } else {
+                if (query.getCategoryId() != null) {
+                    wrapper.eq(Product::getCategoryId, query.getCategoryId());
+                }
+                if (StringUtils.hasText(query.getKeyword())) {
+                    wrapper.like(Product::getName, query.getKeyword());
+                }
+                if (query.getStatus() != null) {
+                    wrapper.eq(Product::getStatus, query.getStatus());
+                }
+            }
+        }
+        wrapper.orderByDesc(Product::getId);
+        // searchCount=false：导出不展示总页数，省掉每页一次 COUNT
+        IPage<Product> page = productMapper.selectPage(new Page<>(current, pageSize, false), wrapper);
+        return buildListPageResult(page).getRecords();
     }
 
     @Override

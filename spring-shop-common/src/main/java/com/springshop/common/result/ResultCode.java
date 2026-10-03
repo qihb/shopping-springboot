@@ -12,6 +12,14 @@ public enum ResultCode {
     NOT_FOUND(404, "资源不存在"),
     SYSTEM_ERROR(500, "系统内部错误"),
 
+    // 业务码：Excel 异步任务（公共段，导入导出各模块共用）
+    EXCEL_TASK_NOT_FOUND(41, "任务不存在或已被清理，请刷新任务列表"),
+    EXCEL_TASK_DUPLICATE(42, "已有同类任务正在执行，请等待其完成后再提交"),
+    EXCEL_TASK_BUSY(43, "系统繁忙，任务排队已满，请稍后重试"),
+    EXCEL_TASK_DISABLED(44, "导入导出功能当前不可用"),
+    EXCEL_TASK_NOT_FINISHED(45, "任务尚未完成，暂时无法下载结果"),
+    EXCEL_TASK_NO_RESULT(46, "任务没有可下载的结果文件"),
+
     // 业务码：用户模块（1000 段）
     USERNAME_EXISTS(1001, "用户名已存在"),
     USER_NOT_FOUND(1002, "用户不存在"),

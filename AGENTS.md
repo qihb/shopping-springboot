@@ -34,7 +34,9 @@ spring_shop/
 │       ├── exception/          # 业务异常 + 全局异常处理
 │       ├── result/             # 统一响应 Result / ResultCode / PageResult
 │       ├── dto/                # 通用分页入参 PageQuery
-│       ├── excel/              # 通用 Excel 读写（POI 封装 ExcelSupport / ExcelRow / ImportError）
+│       ├── excel/              # 通用 Excel 读写（Fesod 封装：ExcelSupport / ExcelStreamWriter /
+│       │                       #   ExcelExportSupport / ExcelRow / ExcelReadOptions / ExcelFileType）
+│       │   └── task/           # 通用异步导入导出任务框架（任务表、线程池、文件存取、进度与失败明细）
 │       └── security/           # JWT 工具 JwtTokenProvider、用户上下文 UserContext、RedisKeys
 ├── spring-shop-user/           # 用户模块：注册、登录（含小程序）、当前用户、多端标识
 ├── spring-shop-product/        # 商品模块：分类、SPU/SKU/图片，前后台列表与详情（读服务聚合）、库存条件扣减
@@ -189,6 +191,17 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
 
 新增错误码必须使用本模块段位内的数字。
 
+**已占用的 0~99 段（公共）**：
+
+| 码 | 含义 |
+|----|------|
+| 41 | `EXCEL_TASK_NOT_FOUND` 任务不存在（含「不是自己的任务」，两者返回同一个码） |
+| 42 | `EXCEL_TASK_DUPLICATE` 已有同类任务在执行中，请等它结束再提交 |
+| 43 | `EXCEL_TASK_BUSY` 任务排队已满，请稍后重新提交 |
+| 44 | `EXCEL_TASK_DISABLED` 导入导出功能已关闭 |
+| 45 | `EXCEL_TASK_NOT_FINISHED` 任务尚未完成，暂时无法下载 |
+| 46 | `EXCEL_TASK_NO_RESULT` 没有可下载的结果文件 |
+
 **已占用的 2000 段（product）**：
 
 | 码 | 含义 |
@@ -229,6 +242,64 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
 | 7001 | `STATS_RECALL_DATE_INVALID` 统计日期不合法，不可晚于今天 |
 | 7002 | `STATS_RECALL_PARAM_INVALID` 圈人参数不合法 |
 | 7003 | `STATS_RECALL_RUNNING` 圈人任务正在执行中，请稍后重试 |
+
+### 异步导入导出（Excel 任务框架，强约束）
+
+所有「批量导入 / 批量导出」一律走 `spring-shop-common` 的异步任务框架，**不允许**在业务模块里
+同步读写 Excel 或自己起线程。
+
+| 组件 | 职责 |
+|------|------|
+| `ExcelSupport` / `ExcelStreamWriter` / `ExcelExportSupport` | Fesod 封装：流式读、分批写、分页导出模板方法 |
+| `ExcelTaskExecutor` | 受理 + 调度 + 状态兜底（`submitImport` / `submitExport`） |
+| `ExcelTaskService` | 任务台账读写、失败明细存取、文件清理（**不含调度**，避免循环依赖） |
+| `ExcelTaskContext` | 交给业务执行体的上下文：源文件、结果文件、条件还原、进度上报、失败明细 |
+| `ExcelFileStorage` | 临时文件存取（`{tmpDir}/{yyyyMMdd}/{taskNo}.{ext}`） |
+| `ExcelTaskController`（web 模块） | `GET /api/admin/excel-tasks`、`/{taskNo}`、`/{taskNo}/download` |
+
+**硬约束**：
+
+1. **依赖只能用 Fesod，不要引 POI。** `fesod-sheet` 会传递引入 POI 5.5.x；再单独声明 `poi-ooxml`
+   会造成两个 POI 版本共存，运行期抛 `NoSuchMethodError`。
+2. **读必须显式指定文件类型**（`ExcelReadOptions.fileType(...)`）。不给类型时 Fesod 探测失败会
+   **静默退化成 CSV 解析**：垃圾字节读成 0 行而不报错，用户拿到的是「导入成功但一条都没进去」。
+3. **写表头是列优先**：`builder.head(List<List<String>>)` 的外层 list 是**列**，不是行。
+   传 `List.of(headers)` 会写出「3 行 × 1 列」的错位表头。统一走 `ExcelStreamWriter`，不要自己拼。
+4. **导出必须「边查边写」**：按 `excel.task.export-page-size` 分页拉取，每页写完立刻丢弃。
+   禁止先 `selectList` 全量再写盘 —— 十万行的结果集会把堆撑爆。分页取数用
+   `new Page<>(current, pageSize, false)`（`searchCount=false`，导出不需要总数）。
+5. **导出结果落盘、下载时流式拷贝**：Controller 写 `HttpServletResponse`，**不要**返回
+   `ResponseEntity<byte[]>`（后者会把整个文件读进堆）。下载接口返回 `void` 是文件下载的固有例外。
+6. **任务状态必须落库**（`excel_task` 表），不用 Redis / 内存：导入要跑几十秒到几分钟，
+   用户会刷新页面、应用会滚动重启，放内存就是「一直转圈」。
+7. **提交人身份在受理阶段取好**：`UserContext` 是 `ThreadLocal`，**不会**传播到异步线程，
+   必须在 Controller 里 `UserContext.getUserId()` 取出来当参数传下去。
+8. **执行体不能用 `@Transactional`**：它跑在异步线程里，自调用不走代理；批级事务用
+   `TransactionTemplate`，语义是「批内原子、批间独立」，并配合「整批回滚后逐组/逐行重试」，
+   让单条唯一键冲突降级为单行失败而不是整批失败。
+9. **执行体必须无条件收尾上报**。只在「有分组/有批次」时上报进度，会让「全部行都在校验阶段失败」
+   的文件以 `处理 0 行 / 失败 0 行` 收场，而失败明细里明明有内容。
+10. **同一业务类型 + 同一提交人不允许并发任务**（`assertNotRunning`），否则连点就能把线程池打满；
+    队列满时 `AbortPolicy` 直接拒绝并提示「排队已满」，**不要**用 `CallerRunsPolicy`
+    （HTTP 线程会亲自去跑几万行导入，请求必然超时）。
+11. **任务归属校验而不是权限码**：能提交任务说明已经过了权限码；查询/下载一律用 `created_by`
+    做归属校验，「任务不存在」与「不是我的任务」返回同一个错误码，不给探测他人任务号的机会。
+12. **阈值全部配置化**（`excel.task.*`）：批大小、线程数、分页大小、行数上限这些参数和部署机器
+    强相关，硬编码就只能改代码重发。
+
+**新增一个导出只需三步**：写一个 `@ExcelProperty` 标注的行模型（含 `from(VO)` 静态转换）、
+在查询服务里加一个 `xxxExportPage(query, current, pageSize)`（复用列表页的筛选口径、
+`searchCount=false`）、写一个 `XxxExportService` 调 `ExcelExportSupport.export(...)`。
+分页循环、进度上报、空数据写表头都由模板方法兜住。
+
+> 📎 **配套技能**：`.workbuddy-ai/skills/spring-shop-excel-task/` 是本框架的**可执行操作手册** ——
+> 代码地图（每个类在哪、干什么）、接口清单与权限码、「新增一个导入/导出」的步骤、
+> 装配陷阱（bean 名撞车 / `@MapperScan` 与 `*.mapper` 包 / 包名目录不一致）、
+> Fesod 三个静默失败的坑、异步集成测试铁律、以及一张「现象 → 先看哪里」排查表。
+> 本节是**规范来源**，那份技能是**动手时的向导**；两者冲突时以本节为准并顺手修技能。
+>
+> 其中 `references/task-internals.md` 记了任务表字段的设计理由与 `excel.task.*` 每一项
+> 改了会有什么后果，`references/fesod-pitfalls.md` 记了 Fesod 的正确写法与 `javap` 探针命令。
 
 ### 参数校验
 
@@ -299,6 +370,43 @@ class XxxIntegrationTest {
     // @Test ...
 }
 ```
+
+**例外：涉及异步任务（Excel 导入/导出）的集成测试不得加 `@Transactional`。**
+
+任务执行体跑在独立的 `excel-task` 线程池里，用的是**另一条数据库连接**。测试方法的事务对它不可见：
+
+- 测试里建的前置数据（分类、商品）在异步线程里「查不到」→ 导入整批报「分类不存在」；
+- 任务表的状态回写落在另一个未提交的快照上 → 轮询永远读到「未开始」。
+
+所以这类测试必须：
+
+```java
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+// 刻意不加 @Transactional：执行体在另一个线程、另一条连接上
+class XxxImportIntegrationTest {
+
+    /** 本次 JVM 运行的唯一后缀，避免共享 H2 里的历史数据撞唯一键 */
+    private static final String RUN_TAG = Long.toString(System.nanoTime() % 1_000_000);
+}
+```
+
+1. 所有测试数据带 `RUN_TAG` 唯一后缀（H2 在同一个 surefire JVM 内是共享的）；
+2. 断言**按名称/编码过滤，不依赖任何「总数」**；
+3. 用**轮询**等任务到终态（50ms 一次 + 上限 30s），不要 `sleep` 固定时长；
+4. **`POST` 之外的动作也要看业务码**：业务失败同样是 HTTP 200，只看 `status().isOk()` 会把「没受理」当成「已受理」；
+5. **不要直接对 `Result.data` 调 `asLong()/asText()`**：`data` 为 JSON `null` 时 Jackson 给的是
+   `NullNode`（非 null 引用），`asLong()` 静默返回 `0` —— 于是「按 id 导出」变成「导出 id=0 的数据」，
+   一条都查不到且不报错。先断言 `code == 200` 并检查 `data` 非 null。
+
+> 反面教材（本次踩坑实录）：`POST /api/admin/categories` 返回 `Result<Void>`，
+> 测试用 `data.asLong()` 取分类 id 拿到 `0`，连带商品创建失败也拿到 `0`，
+> 最终「导出选中商品」导出 0 行 —— 全程没有任何异常，只有一个莫名其妙的断言失败。
+>
+> 另一个坑：**分类表对名称没有唯一约束**，每个用例都建一次同名分类会堆出多条，
+> 而导入按名称匹配分类时「同名多条宁可整组失败也不猜」→ 后跑的用例莫名其妙全军覆没。
+> 需要跨用例共享的分类，请幂等地只建一次。
 
 #### 2. 需要真实 Servlet 容器时（`multipart` / 大小限制 / 真实 HTTP 语义）
 

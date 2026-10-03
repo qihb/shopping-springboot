@@ -1,6 +1,7 @@
 package com.springshop.admin.service;
 
 import com.springshop.admin.dto.AdminUserCreateRequest;
+import com.springshop.admin.dto.AdminUserExportQuery;
 import com.springshop.admin.dto.AdminUserPageQuery;
 import com.springshop.admin.dto.AdminUserUpdateRequest;
 import com.springshop.admin.vo.AdminUserVO;
@@ -19,6 +20,17 @@ public interface AdminUserService {
 
     /** 分页查询管理员（含角色信息） */
     PageResult<AdminUserVO> page(AdminUserPageQuery query);
+
+    /**
+     * 导出一页管理员数据
+     *
+     * <p>与列表页分开是因为导出要突破「单页最多 100 条」的接口层限制，
+     * 且不需要总数（按「还有没有下一页」推进即可）。
+     *
+     * @param current  页码，从 1 开始
+     * @param pageSize 每页条数
+     */
+    List<AdminUserVO> exportPage(AdminUserExportQuery query, long current, long pageSize);
 
     /** 查询管理员详情 */
     AdminUserVO detail(Long id);

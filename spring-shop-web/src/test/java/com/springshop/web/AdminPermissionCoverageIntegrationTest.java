@@ -57,6 +57,12 @@ import static org.mockito.Mockito.when;
  *
  * <p>⚠️ 如果将来出现 {@code hasAuthority} 之外的写法（如 {@code hasAnyAuthority}、{@code hasRole}），
  * 解析会失败并**直接让用例失败**，而不是被静默跳过 —— 这时需要同步更新本测试的解析逻辑。
+ *
+ * <p><b>唯一的白名单：{@code isAuthenticated()}</b>。{@link com.springshop.web.controller.ExcelTaskController}
+ * （Excel 任务中心）刻意不用权限码：能提交导入/导出任务说明提交时已经过了权限码校验，任务本身用
+ * {@code created_by} 做归属校验，只能查自己的任务。这类接口不属于「权限码体系」，
+ * 因此不参与本测试的对账 —— 但白名单是**精确匹配整个表达式**的，
+ * 写成 {@code isAuthenticated() and hasAuthority('x')} 依然会被判为不可解析。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -67,6 +73,17 @@ class AdminPermissionCoverageIntegrationTest {
     /** 从 SpEL 表达式里提取权限码，兼容单引号与双引号写法 */
     private static final Pattern AUTHORITY_PATTERN =
             Pattern.compile("hasAuthority\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)");
+
+    /**
+     * 白名单：只要求登录、不要求权限码的表达式。
+     *
+     * <p>刻意用 {@code matches()} 做**整串精确匹配**而不是 {@code find()}：
+     * 只有表达式「就是」{@code isAuthenticated()} 时才豁免。
+     * 一旦写成 {@code isAuthenticated() and hasAuthority('x')} 这类复合表达式，
+     * 就不再走白名单，而是回到正常的权限码提取流程。
+     */
+    private static final Pattern AUTHENTICATED_ONLY_PATTERN =
+            Pattern.compile("\\s*isAuthenticated\\(\\)\\s*");
 
     private static final String ADMIN_ROLE_CODE = "ADMIN";
 
@@ -200,14 +217,19 @@ class AdminPermissionCoverageIntegrationTest {
 
     private void collect(PreAuthorize preAuthorize, String location,
                          Map<String, List<String>> authorities, List<String> unparseable) {
-        Matcher matcher = AUTHORITY_PATTERN.matcher(preAuthorize.value());
+        String expression = preAuthorize.value();
+        if (AUTHENTICATED_ONLY_PATTERN.matcher(expression).matches()) {
+            // 「登录即可」的接口（Excel 任务中心）走归属校验而不是权限码，不属于本测试的对账范围
+            return;
+        }
+        Matcher matcher = AUTHORITY_PATTERN.matcher(expression);
         boolean matched = false;
         while (matcher.find()) {
             matched = true;
             authorities.computeIfAbsent(matcher.group(1), key -> new ArrayList<>()).add(location);
         }
         if (!matched) {
-            unparseable.add("  - " + location + " -> " + preAuthorize.value());
+            unparseable.add("  - " + location + " -> " + expression);
         }
     }
 

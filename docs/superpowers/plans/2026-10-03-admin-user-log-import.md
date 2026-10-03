@@ -109,4 +109,14 @@ mvn clean verify        # 等价 CI，实测 248 tests / BUILD SUCCESS
 
 ## 六、暂不做（YAGNI）
 
-管理员删除/账号回收流程、首登强制改密、登录验证码、IP 白名单、refresh token、导入异步化（上万行场景）、操作日志归档、product/order 后台接口的审计日志（需在 admin 侧扩 AOP 切点）。
+管理员删除/账号回收流程、首登强制改密、登录验证码、IP 白名单、refresh token、~~导入异步化（上万行场景）~~、操作日志归档、product/order 后台接口的审计日志（需在 admin 侧扩 AOP 切点）。
+
+> **状态更新（2026-10-03 晚）**：其中 ~~导入异步化（上万行场景）~~ **已完成**，不再是待办。
+> 独立需求「导入改 Fesod + 异步 + 大数据 + 导出」已交付：
+> - 导入换成 Apache Fesod 流式读写，改为**异步任务**（受理返回 `taskNo` → 任务中心轮询 → 下载失败明细）；
+> - 导出新增**统一异步导出任务**，覆盖商品 / 管理员 / 操作日志 / 订单四个后台列表；
+> - 详见 [AGENTS.md](../../../AGENTS.md) 的「异步导入导出（Excel 任务框架，强约束）」、
+>   [docs/admin-module.md](../../admin-module.md) §11、[docs/product-module.md](../../product-module.md) §5.4–5.5。
+>
+> 因此本节剩余项仅剩：管理员删除/账号回收、首登强制改密、登录验证码、IP 白名单、
+> refresh token、操作日志归档、product/order 后台接口的审计日志。

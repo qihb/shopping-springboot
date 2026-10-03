@@ -361,36 +361,106 @@ token 过期才真正生效——这中间的窗口期可能是几小时。
 > 注意：这套机制依赖「每次请求都回查主体」。如果哪天为了性能把它改成纯 token 解析，
 > 权限实时性就会丢失，必须同时补上别的失效手段。
 
-## 11. Excel 导入：为什么用 POI 自己封装，而不是直接上 EasyExcel？
+## 11. Excel 导入导出：为什么换成 Fesod，以及为什么必须异步
 
-当前做法：
+### 11.1 选型：Fesod（原 EasyExcel 的 Apache 孵化版）
 
-- 父 POM 引入 `org.apache.poi:poi-ooxml`（`poi.version = 5.4.1`）
-- 在 `spring-shop-common` 里封装一个**很薄**的工具类 `ExcelSupport`：
-  - `read(InputStream, maxRows)` → `List<ExcelRow>`（跳过表头、跳过全空行、超行数直接报错）
-  - `write(sheetName, headers, rows)` → `byte[]`（生成模板）
-  - `parseDecimal` / `parseInt` / `isBlankText` 等取值辅助
-- 各业务模块只写「列 → 字段」的映射与校验，不碰 POI API
+父 POM 引入 `org.apache.fesod:fesod-sheet:2.0.2-incubating`（Spring Boot BOM 未托管，需显式指定版本），
+`spring-shop-common` 在其上封装 `ExcelSupport` / `ExcelStreamWriter` / `ExcelExportSupport`，
+业务模块**只写「列 → 字段」的映射与校验**，不碰 Fesod API。
 
-考虑点：
+> ⚠️ `fesod-sheet` 会传递引入 POI 5.5.x。**不要再单独声明 `poi-ooxml`** ——
+> 两个 POI 版本共存会在运行期抛 `NoSuchMethodError`。
 
-- **EasyExcel 更省事，但会引一层较重的封装**：它有自己的注解模型、监听器模型、
-  以及一份独立的依赖树；对本项目「模块边界清晰、公共模块保持轻量」的取向不太合。
-- **POI 是底层库，能力边界清楚**：我们只需要「读全部为字符串」和「写一个模板」这两件事，
-  用 `DataFormatter` 把所有单元格当字符串读出来，就足以让业务层专注做校验。
-- **统一入口便于加护栏**：行数上限、列数上限、空行处理、异常话术（加密文件 / 非 Excel 文件）
-  都在 `ExcelSupport` 里收口，业务模块不需要各写一遍。
-- 唯一要接受的是**它比较啰嗦**，所以封装得足够薄，把复杂度挡在 common 里。
+最初用的是裸 POI，换掉的原因只有一个：**内存**。`WorkbookFactory.create` 会把整个工作簿解析成
+DOM 树驻留堆内存，一万行的 xlsx 轻松吃掉几百 MB，导入上限只能卡在千行级。
+Fesod 读走 SAX 事件流、逐行回调，写按批刷缓存，**内存占用与文件行数基本无关**，
+这才敢把上限放开到万行以上。
 
-导入的几个共性设计：
+用 Fesod 时三个必须知道的坑（都已在封装里处理）：
+
+| 坑 | 现象 | 处理 |
+|----|------|------|
+| 不指定文件类型 | Fesod 探测失败会**静默退化成 CSV 解析**，垃圾字节读成 0 行而不报错，用户拿到的是「导入成功但一条都没进去」 | 读之前显式给 `excelType`（`ExcelReadOptions.fileType`），按扩展名推断 |
+| `head()` 是列优先 | `builder.head(List<List<String>>)` 的外层 list 是**列**而不是行，传 `List.of(headers)` 会写出「3 行 × 1 列」的错位表头，多出来的行还会被当成数据读回来 | 统一走 `ExcelStreamWriter.ofHeaders`，内部做列优先转换 |
+| 零数据行不建 sheet | 一行都没有时 Fesod 不会创建 sheet，读回来报「Can not find any sheet!」 | 空集合也要 `write` 一次（首行触发建 sheet），保证「没数据」导出的是只有表头的合法文件 |
+
+### 11.2 异步：为什么不能同步做
+
+同步导入的问题是**上万行**：解析 + 校验 + BCrypt + 逐批落库要跑几十秒到几分钟，
+放在 HTTP 请求里必然超时，而且连接被占死。同步导出同理——十万行的结果集不可能塞进响应。
+
+所以导入导出全部改成「**受理 → 返回 taskNo → 后台线程执行 → 前端轮询 → 下载结果**」，
+通用框架放在 `spring-shop-common` 的 `excel.task` 包：
+
+| 组件 | 职责 |
+|------|------|
+| `ExcelTaskExecutor` | 受理 + 调度 + 状态兜底（`submitImport` / `submitExport`） |
+| `ExcelTaskService` | 任务台账读写、失败明细存取、文件清理（**不含调度**，避免循环依赖） |
+| `ExcelTaskContext` | 交给业务执行体的上下文：源文件、结果文件、条件还原、进度上报、失败明细 |
+| `ExcelFileStorage` | 临时文件存取（`{tmpDir}/{yyyyMMdd}/{taskNo}.{ext}`） |
+| `ExcelTaskController`（web 模块） | `/api/admin/excel-tasks`：列表 / 详情 / 下载 |
+
+几个非做不可的设计决定：
+
+- **任务状态落库**（`excel_task` 表），不放内存也不放 Redis。导入要跑几分钟，用户会刷新页面、
+  应用会滚动重启，放内存就是「一直转圈」；落库还顺带回答了「谁在什么时候导了什么」这个审计问题。
+- **上传文件先落盘**。异步化之后 HTTP 请求在返回 taskNo 时就结束了，`MultipartFile` 依赖的
+  容器临时文件会被回收，后台线程再读就是空流。所以受理阶段必须把内容拷到自己的目录，
+  文件名用「任务号 + 原扩展名」（用户文件名里的 `../` 会造成目录穿越，只作展示字段存库）。
+- **独立线程池**（`excel-task-*`），不共用 Spring 默认的 `applicationTaskExecutor`：
+  导入导出是长耗时任务，混进默认池会拖死无关业务。队列满时 `AbortPolicy` 直接拒绝并提示
+  「排队已满」——**不能用 `CallerRunsPolicy`**，那会让 HTTP 线程亲自去跑几万行导入。
+- **同一业务类型 + 同一提交人禁止并发任务**，否则连点几下就能把线程池打满。
+- **提交人身份在受理阶段取好**：`UserContext` 是 `ThreadLocal`，**不会**传播到异步线程。
+- **执行体不用 `@Transactional`**（跑在异步线程里，自调用不走代理），用 `TransactionTemplate`
+  做「批内原子、批间独立」，整批失败再降级为逐组 / 逐行重试，让单条唯一键冲突
+  降级为单行失败而不是整批失败。
+- **进度与失败明细都是缓冲写**：一万行导入如果每行都 `update` 一次 `excel_task`，
+  写压力比导入本身还大。按 `excel.task.progress-interval` 攒批再刷。
+- **执行体必须无条件收尾上报**。只在「有批次」时上报，会让「全部行都在校验阶段失败」的文件
+  以 `处理 0 行 / 失败 0 行` 收场，而失败明细里明明有内容。
+- **失败明细按需生成**，不落盘：它本质上是 `excel_task_error` 的一个视图，
+  下载时分页流式拼成 xlsx，内存与明细条数无关。
+- **下载是「流到流」**：Controller 直接写 `HttpServletResponse`，不返回 `ResponseEntity<byte[]>`，
+  否则整个文件会先进堆内存。返回 `void` 是文件下载接口的固有例外。
+
+### 11.3 阈值全部配置化（`excel.task.*`）
+
+批大小、线程数这类参数和部署机器强相关（本地 4 核与生产 16 核的最优值差一个量级），
+硬编码就只能改代码重发：
+
+| 配置 | 默认 | 作用 |
+|------|------|------|
+| `enabled` | true | 总开关，关掉后提交任务直接报错 |
+| `tmp-dir` | `${java.io.tmpdir}/spring-shop/excel` | 导入源文件与导出结果文件的落盘目录 |
+| `core-pool-size` / `max-pool-size` / `queue-capacity` | 2 / 4 / 50 | 独立线程池 |
+| `import-batch-size` | 500 | 导入落库批大小 |
+| `export-page-size` | 5000 | 导出分页大小（**决定导出的内存上限**） |
+| `max-import-rows` | 100000 | 单次导入数据行上限，超出直接报错而非截断 |
+| `max-error-rows` | 10000 | 失败明细最多落库条数，防止全错文件把明细表写爆 |
+| `progress-interval` | 500 | 每处理多少行回写一次进度 |
+| `file-retain-hours` / `cleanup-cron` / `zone` | 24 / `0 30 3 * * ?` / Asia/Shanghai | 临时文件保留与清理（`zone` 必须显式指定，cron 用 JVM 默认时区） |
+
+### 11.4 导入的几个共性设计
 
 | 设计点 | 说明 |
 |--------|------|
-| 部分成功 | 合法行照常入库，非法行逐行返回 `{行号, 原因}`，不让一行脏数据废掉整份文件 |
+| 部分成功 | 合法行照常入库，非法行逐行记录 `{行号, 原因}`，不让一行脏数据废掉整份文件。行级失败**不改变任务状态**（任务 `status` 只回答「跑完了没有、有没有整体失败」） |
 | 行号可定位 | `ExcelRow.rowNum` 用**用户看到的 Excel 行号**（表头是第 1 行，数据从第 2 行起），报错信息可以直接对着表格找 |
 | 先校验后占坑 | 唯一键（SKU 编码、用户名）在**所有字段校验通过之后**才标记占用，否则「因价格写错而失败的行」会把编码锁死，后面同编码的合法行被误报为重复 |
 | 组级失败要铺满 | 商品导入按商品名分组，分类解析失败会让该商品的**每一行**都给出原因，否则运营看不到问题出在哪一行 |
 | 模板即文档 | 每个导入接口都配 `GET .../import/template`，模板里带示例行（商品模板用两行同名商品演示「一个 SPU 多个 SKU」） |
+| 查重与索引口径一致 | `uk_sku_code` / `uk_username` 都**不排除逻辑删除的行**，所以占用查询用裸 SQL 不带 `is_deleted`，否则已删除记录占用的编码会被判为可用，最终在 insert 阶段撞唯一键 |
+
+### 11.5 大数据场景下的内存账
+
+| 路径 | 峰值内存 |
+|------|----------|
+| 商品导入 | 走 SAX 流式读，但**按商品名聚合**需要跨行数据，所以数据行驻留内存（上限 `max-import-rows`，十万行 `ExcelRow` 约几十 MB） |
+| 管理员导入 | **真正流式**：模板没有跨行聚合需求，边读边攒批、批满即落库。峰值 = 一批（默认 500 行）+ Fesod 解析缓冲，**与文件总行数无关** |
+| 任意导出 | 一页数据（默认 5000 行）+ Fesod 百行写缓存，**与总量无关**；十万行与一千行导出的内存占用基本相同 |
+| 结果下载 | 文件到响应的流式拷贝，**与文件大小无关** |
 
 ## 四、接口总览
 
@@ -456,10 +526,15 @@ token 过期才真正生效——这中间的窗口期可能是几小时。
 | 方法 | 路径 | 权限 | 说明 |
 |------|------|------|------|
 | GET | `/` | `system:log:list` | 分页查询，支持模块 / 用户名 / 操作 / 状态 / 时间区间筛选 |
+| POST | `/export` | `system:log:list` | 异步导出（JSON body，筛选字段与列表页一致），返回 `Result<ExcelTaskVO>` |
 
 - 只读，不提供删除和修改：审计日志可改就失去意义了。
 - 查询接口本身**刻意不加 `@OperationLog`**，否则「查日志」这个动作会不断往日志表里写日志。
 - 时间参数格式为 `yyyy-MM-dd HH:mm:ss`，排序固定 `create_time DESC, id DESC`。
+- 导出用 **POST + JSON body**（而不是 GET + 查询参数）：四个导出接口（商品 / 管理员 / 操作日志 / 订单）
+  形状必须一致，前端「导出」按钮才能共用一套调用代码；且导出是「创建一个任务」，
+  语义上本来就不是幂等的读。时间字段由全局 Jackson 配置解析（见 `JacksonConfig`），
+  所以 `OperationLogExportQuery` 上**不需要** `@DateTimeFormat`——那是给表单/查询参数绑定用的。
 
 ### 5. 角色管理 `/api/admin/roles`
 

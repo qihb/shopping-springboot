@@ -4,12 +4,14 @@ import com.springshop.admin.aspect.OperationLog;
 import com.springshop.admin.dto.AdminPasswordResetRequest;
 import com.springshop.admin.dto.AdminRoleAssignRequest;
 import com.springshop.admin.dto.AdminUserCreateRequest;
+import com.springshop.admin.dto.AdminUserExportQuery;
 import com.springshop.admin.dto.AdminUserPageQuery;
 import com.springshop.admin.dto.AdminUserUpdateRequest;
+import com.springshop.admin.service.AdminUserExportService;
 import com.springshop.admin.service.AdminUserImportService;
 import com.springshop.admin.service.AdminUserService;
-import com.springshop.admin.vo.AdminUserImportResultVO;
 import com.springshop.admin.vo.AdminUserVO;
+import com.springshop.common.excel.task.ExcelTaskVO;
 import com.springshop.common.result.PageResult;
 import com.springshop.common.result.Result;
 import com.springshop.common.security.UserContext;
@@ -53,11 +55,14 @@ public class AdminUserController {
 
     private final AdminUserService adminUserService;
     private final AdminUserImportService adminUserImportService;
+    private final AdminUserExportService adminUserExportService;
 
     public AdminUserController(AdminUserService adminUserService,
-                              AdminUserImportService adminUserImportService) {
+                              AdminUserImportService adminUserImportService,
+                              AdminUserExportService adminUserExportService) {
         this.adminUserService = adminUserService;
         this.adminUserImportService = adminUserImportService;
+        this.adminUserExportService = adminUserExportService;
     }
 
     @Operation(summary = "分页查询管理员")
@@ -118,12 +123,14 @@ public class AdminUserController {
         return Result.success();
     }
 
-    @Operation(summary = "批量导入管理员", description = "部分成功：合法行写入，非法行在返回结果中给出原因")
+    @Operation(summary = "批量导入管理员",
+            description = "异步受理：合法行写入，非法行记录原因。立即返回任务号，"
+                    + "进度与失败明细在任务中心查看")
     @OperationLog(module = "系统管理", operation = "导入管理员")
     @PreAuthorize("hasAuthority('system:user:import')")
     @PostMapping("/import")
-    public Result<AdminUserImportResultVO> importUsers(@RequestPart("file") MultipartFile file) {
-        return Result.success(adminUserImportService.importUsers(file));
+    public Result<ExcelTaskVO> importUsers(@RequestPart("file") MultipartFile file) {
+        return Result.success(adminUserImportService.submitImport(file, UserContext.getUserId()));
     }
 
     @Operation(summary = "下载管理员导入模板")
@@ -138,5 +145,14 @@ public class AdminUserController {
                 .filename("管理员导入模板.xlsx", StandardCharsets.UTF_8)
                 .build());
         return new ResponseEntity<>(content, headers, HttpStatus.OK);
+    }
+
+    @Operation(summary = "导出管理员",
+            description = "异步受理：按筛选条件导出，传 ids 则只导出选中的管理员。"
+                    + "立即返回任务号，完成后从任务中心下载文件")
+    @PreAuthorize("hasAuthority('system:user:list')")
+    @PostMapping("/export")
+    public Result<ExcelTaskVO> export(@RequestBody AdminUserExportQuery query) {
+        return Result.success(adminUserExportService.submitExport(query, UserContext.getUserId()));
     }
 }

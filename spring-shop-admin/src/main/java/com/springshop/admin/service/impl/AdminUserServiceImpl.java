@@ -1,8 +1,10 @@
 package com.springshop.admin.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.springshop.admin.dto.AdminUserCreateRequest;
+import com.springshop.admin.dto.AdminUserExportQuery;
 import com.springshop.admin.dto.AdminUserPageQuery;
 import com.springshop.admin.dto.AdminUserUpdateRequest;
 import com.springshop.admin.entity.AdminUser;
@@ -67,6 +69,25 @@ public class AdminUserServiceImpl implements AdminUserService {
         Page<AdminUserVO> voPage = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
         voPage.setRecords(toVOList(page.getRecords()));
         return PageResult.of(voPage);
+    }
+
+    @Override
+    public List<AdminUserVO> exportPage(AdminUserExportQuery query, long current, long pageSize) {
+        LambdaQueryWrapper<AdminUser> wrapper = Wrappers.lambdaQuery();
+        if (query != null) {
+            if (query.getIds() != null && !query.getIds().isEmpty()) {
+                // 「导出选中」优先于筛选条件
+                wrapper.in(AdminUser::getId, query.getIds());
+            } else {
+                wrapper.like(StringUtils.hasText(query.getUsername()), AdminUser::getUsername, query.getUsername())
+                        .like(StringUtils.hasText(query.getRealName()), AdminUser::getRealName, query.getRealName())
+                        .eq(query.getStatus() != null, AdminUser::getStatus, query.getStatus());
+            }
+        }
+        wrapper.orderByAsc(AdminUser::getId);
+        // searchCount=false：导出不展示总页数，省掉每页一次 COUNT
+        Page<AdminUser> page = adminUserMapper.selectPage(new Page<>(current, pageSize, false), wrapper);
+        return toVOList(page.getRecords());
     }
 
     @Override

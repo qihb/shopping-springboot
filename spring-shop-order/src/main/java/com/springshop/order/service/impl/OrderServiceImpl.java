@@ -10,6 +10,7 @@ import com.springshop.common.result.ResultCode;
 import com.springshop.common.security.RedisKeys;
 import com.springshop.order.dto.AdminOrderPageQuery;
 import com.springshop.order.dto.OrderCreateRequest;
+import com.springshop.order.dto.OrderExportQuery;
 import com.springshop.order.dto.OrderPageQuery;
 import com.springshop.order.entity.Order;
 import com.springshop.order.entity.OrderItem;
@@ -262,6 +263,28 @@ public class OrderServiceImpl implements OrderService {
         result.setCurrent(page.getCurrent());
         result.setSize(page.getSize());
         return result;
+    }
+
+    @Override
+    public List<OrderVO> exportPage(OrderExportQuery query, long current, long pageSize) {
+        OrderExportQuery safeQuery = query == null ? new OrderExportQuery() : query;
+        LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
+        if (safeQuery.getIds() != null && !safeQuery.getIds().isEmpty()) {
+            // 「导出选中」优先于其他条件：用户勾了行就是明确的意图
+            wrapper.in(Order::getId, safeQuery.getIds());
+        } else {
+            wrapper.like(StringUtils.hasText(safeQuery.getOrderNo()), Order::getOrderNo, safeQuery.getOrderNo())
+                    .eq(safeQuery.getStatus() != null, Order::getStatus, safeQuery.getStatus());
+        }
+        // 与列表页同序（id 倒序），保证分批翻页时不会因为顺序漂移而漏行/重复
+        wrapper.orderByDesc(Order::getId);
+        // searchCount=false：导出不展示总页数，省掉每页一次 COUNT
+        Page<Order> page = orderMapper.selectPage(new Page<>(current, pageSize, false), wrapper);
+
+        Map<Long, List<OrderItem>> itemMap = loadItems(page.getRecords());
+        return page.getRecords().stream()
+                .map(order -> toVO(order, itemMap.getOrDefault(order.getId(), List.of())))
+                .toList();
     }
 
     @Override

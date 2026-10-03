@@ -112,11 +112,21 @@ MVP 关键约束：
   - 「SKU 顺序」：ProductDetailVO 的 skus 按 price 升序，便于前台默认展示最低价 SKU。
   - 「图片顺序」：按 `sort` 升序 orderByAsc 查询返回。
 
-### 5.4 ProductImportService（批量导入，事务）
+### 5.4 ProductImportService（批量导入，异步）
 
-接口：`importProducts(MultipartFile)` / `buildTemplate()`
+接口：`submitImport(MultipartFile, Long adminId)` / `buildTemplate()`
 实现：[ProductImportServiceImpl](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/service/impl/ProductImportServiceImpl.java)
-依赖：`spring-shop-common` 的 `ExcelSupport`（POI 薄封装），product 模块本身不直接引 POI。
+依赖：`spring-shop-common` 的 `ExcelSupport`（Fesod 薄封装）与 `excel.task` 任务框架，
+product 模块本身**不直接引 Fesod / POI**。
+
+**受理与执行分离**：`submitImport` 只做「校验文件格式 → 交给 `ExcelTaskExecutor`」，
+立刻返回 `ExcelTaskVO`（含 `taskNo`）；真正解析落库跑在独立的 `excel-task-*` 线程池里，
+前端拿 `taskNo` 轮询 `GET /api/admin/excel-tasks/{taskNo}` 看进度，失败明细从
+`GET /api/admin/excel-tasks/{taskNo}/download` 下载。
+
+这样做的理由是**上万行**：同步请求里跑几分钟的导入必然超时，且连接被占死；
+而上传文件必须先落盘（`ExcelFileStorage`）——HTTP 请求一返回，`MultipartFile` 依赖的临时文件
+就被容器回收了，后台线程再读就是空流。
 
 **模板结构：一行一个 SKU。** 商品级字段（名称 / 副标题 / 主图 / 分类）在同一个商品的多行里重复填写，
 解析时按「商品名称」聚合（`LinkedHashMap` 保序），同名多行合并成 **一个 SPU + 多个 SKU**。
@@ -131,7 +141,7 @@ MVP 关键约束：
 **校验分两级**，顺序不能颠倒：
 
 1. **组级（整个商品）**：商品名非空且 ≤100；分类名称能**唯一**解析到分类 id。
-   - 分类不存在、或存在多个同名分类 → 该商品**所有行**都记为失败（`addGroupError` 逐行铺开）。
+   - 分类不存在、或存在多个同名分类 → 该商品**所有行**都记为失败（`groupError` 逐行铺开）。
      因为缺分类的商品没有任何一行能落库，只报一行会让运营以为改一行就行。
    - 副标题 ≤200、主图 URL ≤255。
 2. **行级（单个 SKU）**：SKU 编码非空且 ≤64、规格 ≤255、销售价必填且 >0、原价非负、
@@ -139,24 +149,52 @@ MVP 关键约束：
    - 价格额外做精度校验：`DECIMAL(10,2)` 会**静默四舍五入**，所以超过 8 位整数或 2 位小数直接拒绝，
      而不是让数据库悄悄改数。
 
-**两个容易踩的顺序问题**（都已在实现中处理，改代码时别改回去）：
+**三个容易踩的顺序问题**（都已在实现中处理，改代码时别改回去）：
 
 - **SKU 编码要在所有字段校验通过后才标记占用**。否则「因价格写错而失败的行」会把编码锁死，
   同一份文件里后面那个编码正确、价格正确的行反而被误报为重复。
 - **先构建完所有 SKU，再插入 SPU**。否则会出现「SPU 已创建但一个 SKU 都没有」的空商品。
+- **收尾必须无条件上报进度**。只在「有分组」时上报，会让一个「所有行都因商品名为空而失败」的文件
+  以 `处理 0 行 / 失败 0 行` 收场，而失败明细里明明有内容。
 
 **重复校验要与索引口径一致**：
 `product_sku.sku_code` 上的 `uk_sku_code` 唯一索引**不排除逻辑删除的行**，
 所以导入前的占用查询用 `ProductSkuMapper.selectOccupiedSkuCodes`（裸 SQL，不带 `is_deleted` 条件），
 而不是用 MyBatis-Plus 的 lambda 查询——否则逻辑删除过的 SKU 编码会被判为可用，
-最终在 insert 阶段撞唯一键抛 500。
+最终在 insert 阶段撞唯一键抛 500。编码按 1000 个一片分片查询，避免单条 `IN (...)` 超出报文/占位符上限。
 
-**部分成功语义**：合法行照常入库，非法行逐行返回 `{rowNum, message}`。
+**部分成功语义**：合法行照常入库，非法行逐行记进 `excel_task_error`。
 `rowNum` 用的是**用户在 Excel 里看到的行号**（表头是第 1 行，数据从第 2 行起），报错可直接对着表格定位。
+行级失败**不改变任务的成功状态**（任务 `status` 只回答「跑完了没有、有没有整体失败」），
+失败信息由 `successRows / failRows` 两个计数 + 可下载的失败明细表达。
 
-返回体 `ProductImportResultVO`：`totalRows / productCount / skuCount / failRowCount / errors`。
+**事务与并发**：执行体不用 `@Transactional`（跑在异步线程里，自调用不走代理），
+而是用 `TransactionTemplate` 做「批内原子、批间独立」（批大小 `excel.task.import-batch-size`）。
+整批失败时**降级为逐组重试**，把唯一键冲突精确落到那一组，其余组照常导入成功。
 
-**行数上限 1000**（`ExcelSupport.MAX_ROWS`）。超限直接报错而不是截断，避免运营以为全导进去了。
+**内存特性**：读走 Fesod 的 SAX 事件流（不构建整表 DOM），但**分组需要跨行聚合**，
+所以数据行会驻留内存（上限 `excel.task.max-import-rows`，默认 10 万行）。
+十万行 `ExcelRow` 的堆占用约几十 MB，是「按名称聚合」这个语义换来的必要代价。
+
+**行数上限**：`excel.task.max-import-rows`（默认 100000）。超限直接报错而不是截断，
+避免运营以为全导进去了。
+
+### 5.5 ProductExportService（批量导出，异步）
+
+接口：`submitExport(ProductExportQuery, Long adminId)`
+实现：[ProductExportServiceImpl](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/service/impl/ProductExportServiceImpl.java)
+
+与导入对称：`POST /api/admin/products/export` 受理后立刻返回 `taskNo`，后台线程**边查边写**——
+按 `excel.task.export-page-size`（默认 5000）分页拉取，每页转成
+[ProductExportRow](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/vo/ProductExportRow.java)
+后立刻写进 Excel 写缓存。全程只有「一页数据 + Fesod 百行写缓存」在内存里，
+十万行导出与一千行导出的内存占用基本相同。
+
+分页取数用 `ProductQueryService.adminExportPage`（复用列表页的筛选口径，保证「看到的」=「导出的」），
+分页对象用 `new Page<>(current, pageSize, false)`——`searchCount=false` 省掉每页一次 COUNT，
+导出并不展示总页数。
+
+`ids` 优先于其它条件：用户勾了行就是明确的意图（「导出选中」）。
 
 ## 六、控制器与权限
 
@@ -164,8 +202,11 @@ MVP 关键约束：
 - 控制器方法级按钮权限：
   - 分类：`product:category:{list|create|update|delete}`（由 [AdminCategoryController](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/controller/admin/AdminCategoryController.java) 的 `@PreAuthorize` 生效）。
   - 商品：`product:product:{list|create|update}`，导入另用 `product:product:import`（由 [AdminProductController](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/controller/admin/AdminProductController.java) 的 `@PreAuthorize` 生效）。
-- 商品导入接口：
-  - `POST /api/admin/products/import`（`multipart/form-data`，字段名 `file`）→ 权限 `product:product:import`
+- 商品导入 / 导出接口：
+  - `POST /api/admin/products/import`（`multipart/form-data`，字段名 `file`）→ 权限 `product:product:import`，
+    返回 `Result<ExcelTaskVO>`（异步受理）
+  - `POST /api/admin/products/export`（JSON body，可选 `ids`）→ 权限 `product:product:list`，
+    返回 `Result<ExcelTaskVO>`（异步受理）
   - `GET /api/admin/products/import/template` → 权限 `product:product:import`，返回 xlsx 附件
   - 文件大小上限由 `spring.servlet.multipart.max-file-size`（5MB）控制，超限由
     `GlobalExceptionHandler.handleMaxUploadSizeExceeded` 转成可读提示「上传文件过大，请拆分后分批导入」。
@@ -175,6 +216,8 @@ MVP 关键约束：
     **友好提示根本没机会返回**。这一点由
     [ProductImportMultipartIntegrationTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/test/java/com/springshop/web/ProductImportMultipartIntegrationTest.java)
     用真实 Tomcat 守住（MockMvc 覆盖不到，见该测试类注释）。
+  - **导出不新增权限码**：沿用列表的 `product:product:list`。「能看列表就能导出列表」是同一份数据的
+    同一个权限，另造一个 `product:product:export` 只会让菜单种子数据与已有角色授权多一层维护成本。
 - 前台公开接口（SecurityConfig 白名单 permitAll）：
   - `GET /api/categories/tree` → [AppCategoryController.tree](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/controller/app/AppCategoryController.java)
   - `GET /api/products`、`GET /api/products/{id}` → [AppProductController](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/controller/app/AppProductController.java)

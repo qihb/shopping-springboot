@@ -3,9 +3,12 @@ package com.springshop.order.service;
 import com.springshop.common.result.PageResult;
 import com.springshop.order.dto.AdminOrderPageQuery;
 import com.springshop.order.dto.OrderCreateRequest;
+import com.springshop.order.dto.OrderExportQuery;
 import com.springshop.order.dto.OrderPageQuery;
 import com.springshop.order.entity.Order;
 import com.springshop.order.vo.OrderVO;
+
+import java.util.List;
 
 /**
  * 订单服务
@@ -66,6 +69,18 @@ public interface OrderService {
      * 后台订单分页
      */
     PageResult<OrderVO> pageForAdmin(AdminOrderPageQuery query);
+
+    /**
+     * 后台订单导出取数（分页拉取，供异步导出任务边查边写）
+     *
+     * <p>与 {@link #pageForAdmin} 共用同一套筛选口径，区别只在「不算总数」：
+     * 导出不展示总页数，每页多一次 COUNT 纯属浪费。
+     *
+     * @param query    导出条件，传 {@code ids} 时只取选中的订单
+     * @param current  页码，从 1 开始
+     * @param pageSize 每页条数
+     */
+    List<OrderVO> exportPage(OrderExportQuery query, long current, long pageSize);
 
     /**
      * 后台发货：待发货 → 待收货
