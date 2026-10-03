@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.springshop.stats.mapper.RecallAnalysisMapper">
+
+    <!--
+      待召回人群：加购未买条目。
+      口径与购物车列表保持一致（SKU 与商品均未删除且在售、账号未删除且未禁用），
+      否则会圈到已下架商品或已注销账号。
+      时间条件统一走调用方传入的 idleBefore / idleAfter，SQL 内不做日期函数运算。
+    -->
+    <select id="selectAbandonTargetsPage" resultType="com.springshop.stats.vo.RecallCandidateVO">
+        SELECT
+            c.id                 AS cartItemId,
+            c.user_id            AS userId,
+            c.sku_id             AS skuId,
+            s.product_id         AS productId,
+            p.name               AS productName,
+            p.main_image         AS mainImage,
+            s.price              AS skuPrice,
+            c.quantity           AS quantity,
+            c.quantity * s.price AS cartAmount,
+            c.create_time        AS addTime,
+            u.phone              AS userPhone,
+            u.openid             AS userOpenid
+        FROM cart_item c
+        JOIN product_sku s ON s.id = c.sku_id
+                          AND s.is_deleted = 0 AND s.status = 1
+        JOIN product p     ON p.id = s.product_id
+                          AND p.is_deleted = 0 AND p.status = 1
+        JOIN `user` u      ON u.id = c.user_id
+                          AND u.is_deleted = 0 AND u.status = 1
+        WHERE c.is_deleted = 0
+          AND c.quantity >= #{minQuantity}
+          AND c.create_time &lt;= #{idleBefore}
+          AND c.create_time &gt;= #{idleAfter}
+          AND c.id &gt; #{lastId}
+        ORDER BY c.id ASC
+        LIMIT #{batchSize}
+    </select>
+
+    <!--
+      选品：从人群池聚合加购未买指标 + 近 N 天已成交用户数。
+      从 cart_recall_target 而非 cart_item 聚合：池子已完成全部过滤（有效商品、闲置窗口、
+      异常账号剔除），保证「选品结果」与「待召回人群」来自同一批数据，两处口径不会漂移。
+      成交口径 status IN (2,3,4) = 待发货/待收货/已完成，排除 1 待付款、5 已取消、6 已退款。
+      件数与金额用 LEAST(quantity, qtyCap) 单用户封顶，防单账号超大数量刷榜。
+    -->
+    <select id="selectProductAgg" resultType="com.springshop.stats.entity.CartRecallProduct">
+        SELECT
+            t.product_id                                AS productId,
+            t.product_name                              AS productName,
+            COUNT(DISTINCT t.user_id)                   AS abandonUserCnt,
+            COUNT(*)                                    AS abandonItemCnt,
+            SUM(LEAST(t.quantity, #{qtyCap}) * t.sku_price) AS abandonAmount,
+            COALESCE(paid.paid_user_cnt, 0)             AS paidUserCnt
+        FROM cart_recall_target t
+        LEFT JOIN (
+            SELECT oi.product_id              AS product_id,
+                   COUNT(DISTINCT o.user_id)  AS paid_user_cnt
+            FROM order_item oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.is_deleted = 0
+              AND o.is_deleted = 0
+              AND o.status IN (2, 3, 4)
+              AND o.create_time &gt;= #{paidFrom}
+            GROUP BY oi.product_id
+        ) paid ON paid.product_id = t.product_id
+        WHERE t.stat_date = #{statDate}
+        GROUP BY t.product_id, t.product_name
+        ORDER BY COUNT(DISTINCT t.user_id) DESC, t.product_id ASC
+    </select>
+
+    <!-- 异常账号：购物车条目数超阈值（羊毛党/爬虫特征），调用方在内存中剔除 -->
+    <select id="selectAbnormalUserIds" resultType="java.lang.Long">
+        SELECT c.user_id
+        FROM cart_item c
+        WHERE c.is_deleted = 0
+        GROUP BY c.user_id
+        HAVING COUNT(*) &gt; #{maxCartSize}
+    </select>
+
+    <!-- 待召回池概览：规模、触达覆盖率、僵尸车占比，回答「值不值得发券」 -->
+    <select id="selectSummary" resultType="com.springshop.stats.vo.RecallSummaryVO">
+        SELECT
+            #{statDate}                                                                 AS statDate,
+            COUNT(*)                                                                    AS totalItems,
+            COUNT(DISTINCT t.user_id)                                                   AS totalUsers,
+            COALESCE(SUM(t.cart_amount), 0)                                             AS totalAmount,
+            COALESCE(SUM(CASE WHEN t.reachable = 1 THEN 1 ELSE 0 END), 0)                AS reachableItems,
+            COUNT(DISTINCT CASE WHEN t.reachable = 1 THEN t.user_id END)                 AS reachableUsers,
+            COUNT(DISTINCT CASE WHEN t.user_phone IS NOT NULL
+                                 AND t.user_phone &lt;&gt; '' THEN t.user_id END)          AS phoneUsers,
+            COUNT(DISTINCT CASE WHEN t.user_openid IS NOT NULL
+                                 AND t.user_openid &lt;&gt; '' THEN t.user_id END)          AS openidUsers,
+            COALESCE(AVG(t.idle_hours), 0)                                              AS avgIdleHours,
+            COALESCE(SUM(CASE WHEN t.status = 0 THEN 1 ELSE 0 END), 0)                   AS pendingItems,
+            COALESCE(SUM(CASE WHEN t.status = 1 THEN 1 ELSE 0 END), 0)                   AS sentItems,
+            COALESCE(SUM(CASE WHEN t.status = 2 THEN 1 ELSE 0 END), 0)                   AS convertedItems
+        FROM cart_recall_target t
+        WHERE t.stat_date = #{statDate}
+    </select>
+
+</mapper>

@@ -15,6 +15,7 @@ public final class RedisKeys {
     private static final String PRODUCT_DETAIL = "product:detail:";
     private static final String CATEGORY_TREE = "category:tree";
     private static final String CART = "cart:";
+    private static final String STATS_RECALL_LOCK = "stats:recall:lock";
 
     private RedisKeys() {
     }
@@ -52,5 +53,16 @@ public final class RedisKeys {
     /** 购物车缓存 key：Redis Hash 结构，field=skuId，value=条目id|数量|是否勾选（DB 为主存，Redis 仅读加速） */
     public static String cart(Long userId) {
         return CART + userId;
+    }
+
+    /**
+     * 召回圈人任务分布式锁 key
+     *
+     * <p>{@code @EnableScheduling} 在每个实例各自生效，集群部署时定时任务会同时跑 N 次，
+     * 用该锁保证同一时刻只有一个实例执行。Redis 故障时锁失效、退化为「都执行」，
+     * 由任务自身的幂等（先删待处理再重建）兜底，不会产生重复数据。
+     */
+    public static String statsRecallLock() {
+        return STATS_RECALL_LOCK;
     }
 }

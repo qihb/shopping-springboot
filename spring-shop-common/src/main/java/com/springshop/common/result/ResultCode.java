@@ -59,7 +59,12 @@ public enum ResultCode {
     // 业务码：支付模块（6000 段）
     PAY_ORDER_NOT_FOUND(6001, "订单不存在"),
     PAY_FORBIDDEN(6002, "无权支付该订单"),
-    PAY_STATUS_ILLEGAL(6003, "订单当前状态不可支付");
+    PAY_STATUS_ILLEGAL(6003, "订单当前状态不可支付"),
+
+    // 业务码：统计分析模块（7000 段）
+    STATS_RECALL_DATE_INVALID(7001, "统计日期不合法，不可晚于今天"),
+    STATS_RECALL_PARAM_INVALID(7002, "圈人参数不合法"),
+    STATS_RECALL_RUNNING(7003, "圈人任务正在执行中，请稍后重试");
 
     private final Integer code;
 

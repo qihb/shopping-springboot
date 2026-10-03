@@ -47,6 +47,12 @@ spring_shop/
 │       ├── security/           # AdminJwtAuthenticationFilter / AdminUserPrincipal / AdminUserDetailsService
 │       ├── controller/ service/ mapper/ entity/ dto/ vo/
 │       └── pom.xml             # 依赖 common + validation + aop + spring-security-web
+├── spring-shop-stats/          # 数据运营模块：加购未买召回圈人、选品分析、跑批任务日志
+│   └── src/main/java/com/springshop/stats/
+│       ├── config/             # RecallProperties（阈值全部配置化）
+│       ├── controller/admin/   # AdminRecallController（/api/admin/stats/recall/**）
+│       ├── entity/ mapper/ service/ task/ vo/
+│       └── pom.xml             # 依赖 common + cart + product + order
 └── spring-shop-web/            # 启动模块：依赖所有业务模块
     └── src/main/java/com/springshop/
         ├── SpringShopApplication.java  # 启动类（根包 com.springshop，扫描全部模块）
@@ -67,6 +73,11 @@ spring_shop/
 - **spring-shop-order**：订单业务模块（收货地址、下单快照、条件扣库存、状态流转、后台发货），依赖 common + product + cart。
 - **spring-shop-pay**：支付业务模块（模拟支付、支付记录流水），复用 order 的订单查询与 markPaid 条件更新，依赖 common + order。
 - **spring-shop-admin**：管理后台业务模块（管理员认证、RBAC 权限中心、操作审计），依赖 common。
+- **spring-shop-stats**：数据运营模块（加购未买召回圈人、选品分析、跑批任务日志），
+  只做只读统计与人群池落库，**不参与下单/支付金额链路**，依赖 common + cart + product + order。
+  关键口径：`cart_item` 因下单成功即被物理删除，**其剩余行按定义就是「加购未买」集合**；
+  `create_time` 只在首次加购时写入，是准确的「首次加购时刻」。
+  跑批走 `@Scheduled(cron, zone)` + Redis 锁 + `stats_task_log`，阈值全部在 `stats.cart-recall.*` 配置。
 - **spring-shop-web**：应用启动模块，含启动类、控制器、安全配置（前后台双过滤链）与配置文件，统一依赖所有业务模块。
 
 ### 新增业务模块约定
@@ -149,8 +160,17 @@ public Result<String> health() {
 | 4000~4999 | 订单模块 |
 | 5000~5999 | 管理后台模块 |
 | 6000~6999 | 支付模块 |
+| 7000~7999 | 数据运营模块（stats） |
 
 新增错误码必须使用本模块段位内的数字。
+
+**已占用的 7000 段（stats）**：
+
+| 码 | 含义 |
+|----|------|
+| 7001 | `STATS_RECALL_DATE_INVALID` 统计日期不合法，不可晚于今天 |
+| 7002 | `STATS_RECALL_PARAM_INVALID` 圈人参数不合法 |
+| 7003 | `STATS_RECALL_RUNNING` 圈人任务正在执行中，请稍后重试 |
 
 ### 参数校验
 

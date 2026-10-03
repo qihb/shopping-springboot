@@ -20,3 +20,9 @@ mybatis-plus:
   configuration:
     # 测试环境默认不打印 SQL，保持输出干净
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+# 测试环境关闭定时圈人：@EnableScheduling 是全局的，@SpringBootTest 会真实注册所有 @Scheduled，
+# 关闭后调度触发直接 return，避免跑批逻辑污染测试数据（手动补数接口不受影响）
+stats:
+  cart-recall:
+    enabled: false

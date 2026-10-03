@@ -26,6 +26,7 @@
         <module>spring-shop-cart</module>
         <module>spring-shop-order</module>
         <module>spring-shop-pay</module>
+        <module>spring-shop-stats</module>
         <module>spring-shop-web</module>
     </modules>
 
@@ -82,6 +83,11 @@
             <dependency>
                 <groupId>com.springshop</groupId>
                 <artifactId>spring-shop-pay</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.springshop</groupId>
+                <artifactId>spring-shop-stats</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <!-- JWT 三件套：api 编译期、impl/jackson 运行期 -->

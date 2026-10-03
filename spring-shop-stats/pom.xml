@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.springshop</groupId>
+        <artifactId>spring-shop</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>spring-shop-stats</artifactId>
+    <name>spring-shop-stats</name>
+    <description>统计分析模块：加购未买召回人群圈选、弃购率选品与后台查询</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-common</artifactId>
+        </dependency>
+        <!-- 圈人需要读购物车与商品/SKU；依赖方向 web → stats → order/cart/product → common，无环 -->
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-cart</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-product</artifactId>
+        </dependency>
+        <!-- 弃购率需要已成交用户数，读订单明细（只读） -->
+        <dependency>
+            <groupId>com.springshop</groupId>
+            <artifactId>spring-shop-order</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations-jakarta</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

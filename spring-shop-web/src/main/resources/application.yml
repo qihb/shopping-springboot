@@ -66,6 +66,35 @@ order:
   timeout:
     cancel-minutes: 30
 
+# 加购未买召回圈人：每天凌晨 4 点圈出「加购了但没买」的人群与商品，本轮只圈人、不发券
+stats:
+  cart-recall:
+    enabled: true
+    # 每天 04:00；zone 必须显式指定 —— cron 使用 JVM 默认时区，容器通常为 UTC
+    cron: "0 0 4 * * ?"
+    zone: Asia/Shanghai
+    # 召回窗口：加购满 24 小时仍未下单才算弃购；超过 7 天视为僵尸购物车，不再召回
+    min-idle-hours: 24
+    max-idle-days: 7
+    # 防刷与长尾过滤
+    min-quantity: 1
+    max-cart-size: 200
+    qty-cap: 5
+    min-abandon-users: 3
+    # 弃购率门槛：低于它的商品转化正常，用户没卡在价格上，发券撬不动
+    min-abandon-rate: 0.70
+    # 选品与回看窗口
+    top-n: 100
+    paid-window-days: 30
+    # 跑批批大小
+    page-size: 2000
+    write-batch-size: 500
+    # 建议券面额 = 加购金额 × 比例，并按上下限收敛（面额刻意做小，避免训练出「等券」行为）
+    coupon-rate: 0.05
+    min-coupon-amount: 5.00
+    max-coupon-amount: 200.00
+    retain-days: 90
+
 # 可观测性：Actuator 仅暴露只读端点集合，env/beans 等敏感端点不对外；
 # health 不展示明细，避免泄露内部组件信息（路径已在 SecurityConfig 中放行）
 management:

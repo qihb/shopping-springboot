@@ -134,6 +134,10 @@ public class AdminDataInitializer implements ApplicationRunner {
         Menu orderList = insertMenu(menuMapper, "订单列表", 2, order.getId(), "/order/list", "order:order:list", null, 1, menus);
         insertMenu(menuMapper, "订单发货", 3, orderList.getId(), null, "order:order:ship", null, 1, menus);
 
+        Menu stats = insertMenu(menuMapper, "数据运营", 1, 0L, "/stats", "stats", "DataAnalysis", 4, menus);
+        Menu recall = insertMenu(menuMapper, "加购未买召回", 2, stats.getId(), "/stats/recall", "stats:recall:list", null, 1, menus);
+        insertMenu(menuMapper, "执行圈人", 3, recall.getId(), null, "stats:recall:build", null, 1, menus);
+
         return menus;
     }
 

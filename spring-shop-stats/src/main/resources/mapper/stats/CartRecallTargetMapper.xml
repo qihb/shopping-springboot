@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.springshop.stats.mapper.CartRecallTargetMapper">
+
+    <!-- 批量插入：XML foreach 拼多值 INSERT，避免逐行往返（调用方按批切分，控制单条 SQL 体积） -->
+    <insert id="insertBatch">
+        INSERT INTO cart_recall_target
+        (user_id, sku_id, product_id, product_name, main_image, sku_price, quantity, cart_amount,
+         add_time, idle_hours, user_phone, user_openid, reachable, suggested_amount, status, stat_date)
+        VALUES
+        <foreach collection="list" item="it" separator=",">
+            (#{it.userId}, #{it.skuId}, #{it.productId}, #{it.productName}, #{it.mainImage},
+             #{it.skuPrice}, #{it.quantity}, #{it.cartAmount}, #{it.addTime}, #{it.idleHours},
+             #{it.userPhone}, #{it.userOpenid}, #{it.reachable}, #{it.suggestedAmount},
+             #{it.status}, #{it.statDate})
+        </foreach>
+    </insert>
+
+    <!--
+      清空「待处理」条目，跑批前重建池子。
+      只删 status = 0：已发券/已转化/已失效的记录必须保留，
+      否则会丢掉「券发给谁、有没有转化」的痕迹，活动无法复盘。
+    -->
+    <delete id="deletePending">
+        DELETE FROM cart_recall_target WHERE status = 0
+    </delete>
+
+</mapper>
