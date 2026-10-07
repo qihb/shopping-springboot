@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # commit-msg hook：git 提交信息规范校验
-# 规范格式：<类型>: <简述>  例：feat: 新增用户注册接口
+# 规范格式：<类型>[(<范围>)]: <简述>  例：feat: 新增用户注册接口 / feat(product): 新增商品导入
 # 合法类型：feat / fix / refactor / docs / chore
 # 启用方式：git config core.hooksPath .githooks
 
@@ -19,14 +19,14 @@ subject=$(echo "$subject" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
 if [ -z "$subject" ]; then
   echo "错误：提交信息不能为空"
-  echo "要求：<类型>: <简述>，例：feat: 新增用户注册接口"
+  echo "要求：<类型>[(<范围>)]: <简述>，例：feat: 新增用户注册接口 / feat(product): 新增商品导入"
   exit 1
 fi
 
-if ! echo "$subject" | grep -Eq '^(feat|fix|refactor|docs|chore): .+'; then
-  echo "错误：提交信息不符合规范，要求 <类型>: <简述>"
+if ! echo "$subject" | grep -Eq '^(feat|fix|refactor|docs|chore)(\([^()]+\))?: .+'; then
+  echo "错误：提交信息不符合规范，要求 <类型>[(<范围>)]: <简述>"
   echo "类型必须为以下之一：feat / fix / refactor / docs / chore"
-  echo "示例：feat: 新增用户注册接口"
+  echo "示例：feat: 新增用户注册接口 / feat(product): 新增商品导入"
   exit 1
 fi
 
