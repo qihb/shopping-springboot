@@ -1,5 +1,6 @@
 package com.springshop.user.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
@@ -9,13 +10,16 @@ import jakarta.validation.constraints.Size;
  * <p>前端调用 {@code wx.login()} 拿到临时登录凭证 {@code code} 后提交给本接口，
  * 后端用 code 换取 openid 完成登录；首次登录会自动创建用户。
  */
+@Schema(description = "微信小程序登录请求")
 public class MiniAppLoginRequest {
 
     /** wx.login() 返回的临时登录凭证，只能使用一次 */
+    @Schema(description = "wx.login() 返回的临时登录凭证，只能使用一次")
     @NotBlank(message = "登录凭证 code 不能为空")
     private String code;
 
     /** 昵称（可选，仅首次自动创建用户时使用） */
+    @Schema(description = "昵称，选填，仅首次自动创建用户时使用")
     @Size(max = 20, message = "昵称长度不能超过 20")
     private String nickname;
 

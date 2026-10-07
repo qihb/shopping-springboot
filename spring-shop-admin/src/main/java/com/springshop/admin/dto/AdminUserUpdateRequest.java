@@ -1,5 +1,6 @@
 package com.springshop.admin.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -9,17 +10,21 @@ import jakarta.validation.constraints.Size;
  * 每个接口只做一件事，避免基本信息编辑被当成改密或提权的旁路。
  * 用户名也不可修改：它是审计日志里的操作人标识，变更会让历史日志对不上人。
  */
+@Schema(description = "修改管理员入参")
 public class AdminUserUpdateRequest {
 
     /** 真实姓名 */
+    @Schema(description = "真实姓名")
     @Size(max = 50, message = "姓名长度不超过 50")
     private String realName;
 
     /** 手机号 */
+    @Schema(description = "手机号")
     @Size(max = 20, message = "手机号长度不超过 20")
     private String phone;
 
     /** 账号状态：1 启用 / 0 禁用，为 null 表示不修改 */
+    @Schema(description = "账号状态：1 启用 / 0 禁用，为 null 表示不修改")
     private Integer status;
 
     public String getRealName() {

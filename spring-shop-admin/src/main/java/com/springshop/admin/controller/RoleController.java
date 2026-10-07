@@ -9,8 +9,11 @@ import com.springshop.common.dto.PageQuery;
 import com.springshop.common.result.PageResult;
 import com.springshop.common.result.Result;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -41,14 +44,17 @@ public class RoleController {
     }
 
     @Operation(summary = "分页查询角色")
+    @ApiResponse(responseCode = "200", description = "分页返回角色列表")
     @PreAuthorize("hasAuthority('system:role:list')")
     @GetMapping
-    public Result<PageResult<RoleVO>> page(@Valid PageQuery pageQuery,
+    public Result<PageResult<RoleVO>> page(@ParameterObject @Valid PageQuery pageQuery,
+                                           @Parameter(description = "角色名称，模糊匹配")
                                            @RequestParam(required = false) String name) {
         return Result.success(roleService.page(pageQuery, name));
     }
 
     @Operation(summary = "查询全部启用角色")
+    @ApiResponse(responseCode = "200", description = "返回全部启用角色列表")
     @PreAuthorize("hasAuthority('system:role:list')")
     @GetMapping("/all")
     public Result<List<RoleVO>> listAll() {
@@ -56,6 +62,7 @@ public class RoleController {
     }
 
     @Operation(summary = "新增角色")
+    @ApiResponse(responseCode = "200", description = "新增成功，无返回数据")
     @OperationLog(module = "系统管理", operation = "新增角色")
     @PreAuthorize("hasAuthority('system:role:create')")
     @PostMapping
@@ -65,36 +72,42 @@ public class RoleController {
     }
 
     @Operation(summary = "修改角色")
+    @ApiResponse(responseCode = "200", description = "修改成功，无返回数据")
     @OperationLog(module = "系统管理", operation = "修改角色")
     @PreAuthorize("hasAuthority('system:role:update')")
     @PutMapping("/{id}")
-    public Result<Void> update(@PathVariable Long id, @Valid @RequestBody RoleSaveRequest request) {
+    public Result<Void> update(@Parameter(description = "角色 id") @PathVariable Long id,
+                               @Valid @RequestBody RoleSaveRequest request) {
         roleService.update(id, request);
         return Result.success();
     }
 
     @Operation(summary = "删除角色", description = "已被管理员绑定的角色不可删除")
+    @ApiResponse(responseCode = "200", description = "删除成功，无返回数据")
     @OperationLog(module = "系统管理", operation = "删除角色")
     @PreAuthorize("hasAuthority('system:role:delete')")
     @DeleteMapping("/{id}")
-    public Result<Void> delete(@PathVariable Long id) {
+    public Result<Void> delete(@Parameter(description = "角色 id") @PathVariable Long id) {
         roleService.delete(id);
         return Result.success();
     }
 
     @Operation(summary = "给角色分配菜单权限")
+    @ApiResponse(responseCode = "200", description = "分配成功，无返回数据")
     @OperationLog(module = "系统管理", operation = "分配角色权限")
     @PreAuthorize("hasAuthority('system:role:assign')")
     @PostMapping("/{id}/menus")
-    public Result<Void> assignMenus(@PathVariable Long id, @Valid @RequestBody RoleAssignMenuRequest request) {
+    public Result<Void> assignMenus(@Parameter(description = "角色 id") @PathVariable Long id,
+                                    @Valid @RequestBody RoleAssignMenuRequest request) {
         roleService.assignMenus(id, request.getMenuIds());
         return Result.success();
     }
 
     @Operation(summary = "查询角色已分配的菜单 id")
+    @ApiResponse(responseCode = "200", description = "返回该角色已分配的菜单 id 列表")
     @PreAuthorize("hasAuthority('system:role:list')")
     @GetMapping("/{id}/menus")
-    public Result<List<Long>> listMenuIds(@PathVariable Long id) {
+    public Result<List<Long>> listMenuIds(@Parameter(description = "角色 id") @PathVariable Long id) {
         return Result.success(roleService.listMenuIds(id));
     }
 }

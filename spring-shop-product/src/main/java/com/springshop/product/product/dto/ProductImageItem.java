@@ -1,14 +1,20 @@
 package com.springshop.product.product.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 /**
  * 商品图片保存项
  */
+@Schema(description = "商品图片保存项")
 public class ProductImageItem {
 
+    @Schema(description = "图片 id")
     private Long id;
 
+    @Schema(description = "图片 URL")
     private String imageUrl;
 
+    @Schema(description = "排序值")
     private Integer sort;
 
     public ProductImageItem() {

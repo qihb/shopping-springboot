@@ -1,28 +1,35 @@
 package com.springshop.cart.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.math.BigDecimal;
 import java.util.List;
 
 /**
  * 购物车出参（列表 + 汇总）
  */
+@Schema(description = "购物车出参（列表 + 汇总）")
 public class CartVO {
 
+    @Schema(description = "购物车条目列表")
     private List<CartItemVO> items;
 
     /**
      * 购物车总件数（所有条目数量之和）
      */
+    @Schema(description = "购物车总件数（所有条目数量之和）")
     private Integer totalQuantity;
 
     /**
      * 已勾选件数（仅统计有效且勾选的条目）
      */
+    @Schema(description = "已勾选件数（仅统计有效且勾选的条目）")
     private Integer checkedQuantity;
 
     /**
      * 已勾选金额合计（仅统计有效且勾选的条目）
      */
+    @Schema(description = "已勾选金额合计，单位：元（仅统计有效且勾选的条目）")
     private BigDecimal checkedAmount;
 
     public CartVO() {

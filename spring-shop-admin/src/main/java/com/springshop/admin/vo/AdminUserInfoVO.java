@@ -1,5 +1,7 @@
 package com.springshop.admin.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.util.List;
 
 /**
@@ -7,20 +9,27 @@ import java.util.List;
  *
  * <p>包含角色编码与权限标识集合，前端据此渲染菜单与按钮级权限。
  */
+@Schema(description = "当前登录管理员信息")
 public class AdminUserInfoVO {
 
+    @Schema(description = "管理员 id")
     private Long id;
 
+    @Schema(description = "登录用户名")
     private String username;
 
+    @Schema(description = "真实姓名")
     private String realName;
 
+    @Schema(description = "手机号")
     private String phone;
 
     /** 角色编码集合，如 ["ADMIN"] */
+    @Schema(description = "角色编码集合，如 [\"ADMIN\"]")
     private List<String> roles;
 
     /** 权限标识集合，如 ["product:sku:edit"] */
+    @Schema(description = "权限标识集合，如 [\"product:sku:edit\"]")
     private List<String> permissions;
 
     public AdminUserInfoVO() {

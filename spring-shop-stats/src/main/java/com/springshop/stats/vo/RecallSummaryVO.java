@@ -1,5 +1,7 @@
 package com.springshop.stats.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
@@ -10,41 +12,54 @@ import java.time.LocalDate;
  * 触达覆盖率（reachableUsers / totalUsers）是决定走短信还是小程序订阅消息的关键依据 ——
  * {@code user.phone} 可空，覆盖不到的用户发券也送不出去。
  */
+@Schema(description = "待召回池概览")
 public class RecallSummaryVO {
 
+    @Schema(description = "统计日期")
     private LocalDate statDate;
 
     /** 待召回条目数 */
+    @Schema(description = "待召回条目数")
     private Integer totalItems;
 
     /** 待召回用户数（去重） */
+    @Schema(description = "待召回用户数（去重）")
     private Integer totalUsers;
 
     /** 待召回加购金额（元） */
+    @Schema(description = "待召回加购金额（元）")
     private BigDecimal totalAmount;
 
     /** 可触达条目数（有手机号或 openid） */
+    @Schema(description = "可触达条目数（有手机号或 openid）")
     private Integer reachableItems;
 
     /** 可触达用户数（去重） */
+    @Schema(description = "可触达用户数（去重）")
     private Integer reachableUsers;
 
     /** 有手机号的用户数 */
+    @Schema(description = "有手机号的用户数")
     private Integer phoneUsers;
 
     /** 有 openid 的用户数 */
+    @Schema(description = "有 openid 的用户数")
     private Integer openidUsers;
 
     /** 平均闲置小时数 */
+    @Schema(description = "平均闲置小时数")
     private Integer avgIdleHours;
 
     /** 状态 = 待处理 */
+    @Schema(description = "状态为待处理的条目数")
     private Integer pendingItems;
 
     /** 状态 = 已发券 */
+    @Schema(description = "状态为已发券的条目数")
     private Integer sentItems;
 
     /** 状态 = 已转化 */
+    @Schema(description = "状态为已转化的条目数")
     private Integer convertedItems;
 
     public LocalDate getStatDate() { return statDate; }

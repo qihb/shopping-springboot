@@ -7,6 +7,7 @@ import com.springshop.admin.vo.AdminUserInfoVO;
 import com.springshop.common.result.Result;
 import com.springshop.common.security.UserContext;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -34,12 +35,14 @@ public class AdminAuthController {
     }
 
     @Operation(summary = "管理员登录", description = "连续失败 5 次锁定 15 分钟")
+    @ApiResponse(responseCode = "200", description = "返回登录令牌与管理员信息")
     @PostMapping("/login")
     public Result<AdminLoginResponse> login(@Valid @RequestBody AdminLoginRequest request) {
         return Result.success(adminAuthService.login(request));
     }
 
     @Operation(summary = "退出登录", description = "token 加入黑名单，主动失效")
+    @ApiResponse(responseCode = "200", description = "退出成功，无返回数据")
     @PostMapping("/logout")
     public Result<Void> logout(HttpServletRequest request) {
         String header = request.getHeader("Authorization");
@@ -50,6 +53,7 @@ public class AdminAuthController {
     }
 
     @Operation(summary = "当前管理员信息", description = "返回角色与权限标识")
+    @ApiResponse(responseCode = "200", description = "返回当前登录管理员的角色与权限标识")
     @GetMapping("/me")
     public Result<AdminUserInfoVO> me() {
         return Result.success(adminAuthService.getCurrentAdmin(UserContext.getUserId()));

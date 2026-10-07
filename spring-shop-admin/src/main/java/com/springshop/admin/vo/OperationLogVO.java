@@ -1,47 +1,63 @@
 package com.springshop.admin.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.time.LocalDateTime;
 
 /**
  * 操作日志（审计记录）
  */
+@Schema(description = "操作日志（审计记录）")
 public class OperationLogVO {
 
+    @Schema(description = "日志 id")
     private Long id;
 
     /** 操作管理员 id */
+    @Schema(description = "操作管理员 id")
     private Long adminUserId;
 
     /** 操作管理员用户名 */
+    @Schema(description = "操作管理员用户名")
     private String username;
 
     /** 所属模块，如 商品管理 */
+    @Schema(description = "所属模块，如 商品管理")
     private String module;
 
     /** 操作描述，如 新增商品 */
+    @Schema(description = "操作描述，如 新增商品")
     private String operation;
 
     /** 请求路径 */
+    @Schema(description = "请求路径")
     private String requestUri;
 
     /** 请求方式 GET/POST/PUT/DELETE */
+    @Schema(description = "请求方式 GET/POST/PUT/DELETE")
     private String requestMethod;
 
     /** 请求参数（已脱敏） */
+    @Schema(description = "请求参数（已脱敏）")
     private String requestParams;
 
     /** 操作人 IP */
+    @Schema(description = "操作人 IP")
     private String ip;
 
     /** 执行结果：1 成功 / 0 失败 */
+    @Schema(description = "执行结果：1 成功 / 0 失败")
     private Integer status;
 
     /** 异常信息（失败时记录） */
+    @Schema(description = "异常信息（失败时记录）")
     private String errorMsg;
 
     /** 耗时（毫秒） */
+    @Schema(description = "耗时（毫秒）")
     private Long durationMs;
 
+    @Schema(description = "创建时间")
     private LocalDateTime createTime;
 
     public Long getId() {

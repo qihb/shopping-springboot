@@ -5,6 +5,7 @@ import com.springshop.common.security.UserContext;
 import com.springshop.user.service.UserService;
 import com.springshop.user.vo.UserInfoVO;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -25,6 +26,7 @@ public class UserController {
     }
 
     @Operation(summary = "获取当前登录用户信息")
+    @ApiResponse(responseCode = "200", description = "返回当前登录用户信息")
     @GetMapping("/me")
     public Result<UserInfoVO> me() {
         // 用户 id 由认证过滤器写入 UserContext，无需前端传参

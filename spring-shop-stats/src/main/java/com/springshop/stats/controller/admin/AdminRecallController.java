@@ -8,6 +8,7 @@ import com.springshop.stats.task.CartRecallTask;
 import com.springshop.stats.vo.RecallBuildResultVO;
 import com.springshop.stats.vo.RecallSummaryVO;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -42,6 +43,7 @@ public class AdminRecallController {
     }
 
     @Operation(summary = "待召回池概览（规模、触达覆盖率、状态分布）")
+    @ApiResponse(responseCode = "200", description = "返回待召回池概览统计（沉淀规模、触达覆盖率、状态分布）")
     @PreAuthorize("hasAuthority('stats:recall:list')")
     @GetMapping("/summary")
     public Result<RecallSummaryVO> summary(
@@ -50,6 +52,7 @@ public class AdminRecallController {
     }
 
     @Operation(summary = "选品结果（按弃购率排序的 TOP N 商品）")
+    @ApiResponse(responseCode = "200", description = "返回按弃购率排序的 TOP N 选品列表")
     @PreAuthorize("hasAuthority('stats:recall:list')")
     @GetMapping("/products")
     public Result<List<CartRecallProduct>> products(
@@ -59,6 +62,7 @@ public class AdminRecallController {
     }
 
     @Operation(summary = "待召回人群明细")
+    @ApiResponse(responseCode = "200", description = "返回待召回人群明细列表")
     @PreAuthorize("hasAuthority('stats:recall:list')")
     @GetMapping("/targets")
     public Result<List<CartRecallTarget>> targets(
@@ -69,6 +73,7 @@ public class AdminRecallController {
     }
 
     @Operation(summary = "手动执行圈人（补数/重跑，同一天重复执行结果一致）")
+    @ApiResponse(responseCode = "200", description = "返回本次圈人结果统计（入池人数、选品数、耗时）")
     @PreAuthorize("hasAuthority('stats:recall:build')")
     @PostMapping("/build")
     public Result<RecallBuildResultVO> build(

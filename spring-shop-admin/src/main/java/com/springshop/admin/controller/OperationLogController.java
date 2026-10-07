@@ -10,8 +10,10 @@ import com.springshop.common.result.PageResult;
 import com.springshop.common.result.Result;
 import com.springshop.common.security.UserContext;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,15 +43,17 @@ public class OperationLogController {
     }
 
     @Operation(summary = "分页查询操作日志")
+    @ApiResponse(responseCode = "200", description = "分页返回操作日志列表")
     @PreAuthorize("hasAuthority('system:log:list')")
     @GetMapping
-    public Result<PageResult<OperationLogVO>> page(@Valid OperationLogPageQuery query) {
+    public Result<PageResult<OperationLogVO>> page(@ParameterObject @Valid OperationLogPageQuery query) {
         return Result.success(operationLogService.page(query));
     }
 
     @Operation(summary = "导出操作日志",
             description = "异步受理：按筛选条件导出全部命中记录（不受列表分页限制）。"
                     + "立即返回任务号，完成后从任务中心下载文件")
+    @ApiResponse(responseCode = "200", description = "返回异步导出任务信息，可用任务号查询进度")
     @PreAuthorize("hasAuthority('system:log:list')")
     @PostMapping("/export")
     public Result<ExcelTaskVO> export(@Valid @RequestBody OperationLogExportQuery query) {

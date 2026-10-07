@@ -14,8 +14,11 @@ import com.springshop.product.product.service.ProductQueryService;
 import com.springshop.product.product.vo.ProductDetailVO;
 import com.springshop.product.product.vo.ProductListVO;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -62,20 +65,23 @@ public class AdminProductController {
     }
 
     @Operation(summary = "后台商品分页")
+    @ApiResponse(responseCode = "200", description = "分页返回后台商品列表")
     @PreAuthorize("hasAuthority('product:product:list')")
     @GetMapping
-    public Result<PageResult<ProductListVO>> page(@Valid ProductPageQuery query) {
+    public Result<PageResult<ProductListVO>> page(@Valid @ParameterObject ProductPageQuery query) {
         return Result.success(productQueryService.adminPage(query));
     }
 
     @Operation(summary = "后台商品详情")
+    @ApiResponse(responseCode = "200", description = "返回商品详情，含 SKU 与图片")
     @PreAuthorize("hasAuthority('product:product:list')")
     @GetMapping("/{id}")
-    public Result<ProductDetailVO> detail(@PathVariable Long id) {
+    public Result<ProductDetailVO> detail(@Parameter(description = "商品 id") @PathVariable Long id) {
         return Result.success(productQueryService.adminDetail(id));
     }
 
     @Operation(summary = "创建商品")
+    @ApiResponse(responseCode = "200", description = "创建成功，返回新增商品 id")
     @PreAuthorize("hasAuthority('product:product:create')")
     @PostMapping
     public Result<Long> create(@Valid @RequestBody ProductSaveRequest request) {
@@ -83,17 +89,21 @@ public class AdminProductController {
     }
 
     @Operation(summary = "修改商品")
+    @ApiResponse(responseCode = "200", description = "修改成功，无返回数据")
     @PreAuthorize("hasAuthority('product:product:update')")
     @PutMapping("/{id}")
-    public Result<Void> update(@PathVariable Long id, @Valid @RequestBody ProductSaveRequest request) {
+    public Result<Void> update(@Parameter(description = "商品 id") @PathVariable Long id,
+                               @Valid @RequestBody ProductSaveRequest request) {
         productManageService.update(id, request);
         return Result.success();
     }
 
     @Operation(summary = "上下架商品")
+    @ApiResponse(responseCode = "200", description = "上下架操作成功，无返回数据")
     @PreAuthorize("hasAuthority('product:product:update')")
     @PutMapping("/{id}/status")
-    public Result<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {
+    public Result<Void> updateStatus(@Parameter(description = "商品 id") @PathVariable Long id,
+                                     @RequestParam Integer status) {
         productManageService.updateStatus(id, status);
         return Result.success();
     }
@@ -101,6 +111,7 @@ public class AdminProductController {
     @Operation(summary = "批量导入商品",
             description = "异步受理：一行一个 SKU，同名商品自动聚合为一个 SPU。"
                     + "立即返回任务号，进度与失败明细在任务中心查看")
+    @ApiResponse(responseCode = "200", description = "返回异步导入任务信息，可用任务号查询进度")
     @PreAuthorize("hasAuthority('product:product:import')")
     @PostMapping("/import")
     public Result<ExcelTaskVO> importProducts(@RequestPart("file") MultipartFile file) {
@@ -108,6 +119,7 @@ public class AdminProductController {
     }
 
     @Operation(summary = "下载商品导入模板")
+    @ApiResponse(responseCode = "200", description = "返回商品导入模板 Excel 文件")
     @PreAuthorize("hasAuthority('product:product:import')")
     @GetMapping("/import/template")
     public ResponseEntity<byte[]> downloadImportTemplate() {
@@ -124,6 +136,7 @@ public class AdminProductController {
     @Operation(summary = "导出商品",
             description = "异步受理：按筛选条件导出，传 ids 则只导出选中的商品。"
                     + "立即返回任务号，完成后从任务中心下载文件")
+    @ApiResponse(responseCode = "200", description = "返回异步导出任务信息，可用任务号查询进度")
     @PreAuthorize("hasAuthority('product:product:list')")
     @PostMapping("/export")
     public Result<ExcelTaskVO> export(@RequestBody ProductExportQuery query) {

@@ -1,5 +1,6 @@
 package com.springshop.admin.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 
@@ -8,13 +9,16 @@ import java.util.List;
 /**
  * 给角色分配菜单权限入参
  */
+@Schema(description = "给角色分配菜单权限入参")
 public class RoleAssignMenuRequest {
 
     /** 角色 id */
+    @Schema(description = "角色 id")
     @NotNull(message = "角色 id 不能为空")
     private Long roleId;
 
     /** 分配的菜单 id 集合（可为空集合表示清空权限） */
+    @Schema(description = "分配的菜单 id 集合")
     @NotEmpty(message = "菜单 id 集合不能为空")
     private List<Long> menuIds;
 

@@ -305,6 +305,26 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
 
 - 入参 DTO 使用 `spring-boot-starter-validation` 的注解（`@NotBlank`、`@NotNull`、`@Size` 等），并在 Controller 参数上加 `@Valid` / `@Validated`。
 
+### 接口文档规范（springdoc / OpenAPI，强约束）
+
+接口文档由 springdoc 从代码注解自动生成（`/v3/api-docs`、Swagger UI `/swagger-ui.html`）。
+文档是给人的，**中文说明必须写在代码注解里**，不让使用方去猜字段含义：
+
+- **入参 DTO 与出参 VO**：类上与**每个字段**都要标 `@Schema(description = "中文说明")`。
+  状态/类型/枚举字段在说明里写清取值（如 `上架状态：1-上架，0-下架`），金额字段写明单位（如 `单位：元`）。
+  Excel 导出行模型（`*ExportRow`）不进文档，无需标注。
+- **Controller**：类上标 `@Tag`，方法上标 `@Operation(summary = ...)`；**成功响应**用
+  `@ApiResponse(responseCode = "200", description = "返回…的中文说明")` 说明返回什么数据
+  （只给描述即可，springdoc 会按方法返回类型自动补 schema）。返回 `Result<Void>` 的写「操作成功，无返回数据」。
+- **GET 的 POJO 查询参数**：必须加 `@ParameterObject`，否则 springdoc 把整个对象折叠成一个
+  `$ref` 参数，使用方照文档拼参会失败。
+- **路径变量 / 普通请求参数**：用 `@Parameter(description = "中文说明")`。
+- 401 / 403 / 500 等通用失败响应由 [OpenApiConfig](spring-shop-web/src/main/java/com/springshop/web/config/OpenApiConfig.java)
+  的 `OpenApiCustomizer` 统一补中文，**无需**在 Controller 上逐个标注。
+
+> 自检：打开 Swagger UI 浏览，任何接口的入参、出参字段、响应说明都不应出现空白或英文默认值（`OK` / `Forbidden`）；
+> 也可 `curl -s http://localhost:6001/v3/api-docs` 检索 `description`。
+
 ### 日志与 profile 约定（强约束）
 
 运行时的 profile **只支持 `dev`（默认）和 `prod`**，由 `SPRING_PROFILES_ACTIVE` 控制。

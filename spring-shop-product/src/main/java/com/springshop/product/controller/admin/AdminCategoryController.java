@@ -6,6 +6,7 @@ import com.springshop.product.category.service.CategoryService;
 import com.springshop.product.category.vo.CategoryNodeVO;
 import com.springshop.product.category.vo.CategoryVO;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -35,6 +36,7 @@ public class AdminCategoryController {
     }
 
     @Operation(summary = "分类树")
+    @ApiResponse(responseCode = "200", description = "返回分类树列表")
     @PreAuthorize("hasAuthority('product:category:list')")
     @GetMapping("/tree")
     public Result<List<CategoryNodeVO>> tree() {
@@ -42,6 +44,7 @@ public class AdminCategoryController {
     }
 
     @Operation(summary = "分类详情")
+    @ApiResponse(responseCode = "200", description = "返回分类详情")
     @PreAuthorize("hasAuthority('product:category:list')")
     @GetMapping("/{id}")
     public Result<CategoryVO> getById(@PathVariable Long id) {
@@ -49,6 +52,7 @@ public class AdminCategoryController {
     }
 
     @Operation(summary = "新增分类")
+    @ApiResponse(responseCode = "200", description = "新增分类成功，无返回数据")
     @PreAuthorize("hasAuthority('product:category:create')")
     @PostMapping
     public Result<Void> create(@Valid @RequestBody CategorySaveRequest request) {
@@ -57,6 +61,7 @@ public class AdminCategoryController {
     }
 
     @Operation(summary = "修改分类")
+    @ApiResponse(responseCode = "200", description = "修改分类成功，无返回数据")
     @PreAuthorize("hasAuthority('product:category:update')")
     @PutMapping("/{id}")
     public Result<Void> update(@PathVariable Long id, @Valid @RequestBody CategorySaveRequest request) {
@@ -65,6 +70,7 @@ public class AdminCategoryController {
     }
 
     @Operation(summary = "删除分类")
+    @ApiResponse(responseCode = "200", description = "删除分类成功，无返回数据")
     @PreAuthorize("hasAuthority('product:category:delete')")
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable Long id) {

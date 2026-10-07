@@ -1,22 +1,31 @@
 package com.springshop.admin.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.time.LocalDateTime;
 
 /**
  * 角色信息（对外不暴露逻辑删除等内部字段）
  */
+@Schema(description = "角色信息")
 public class RoleVO {
 
+    @Schema(description = "角色 id")
     private Long id;
 
+    @Schema(description = "角色名称")
     private String name;
 
+    @Schema(description = "角色编码（唯一，如 ADMIN / OPERATOR）")
     private String code;
 
+    @Schema(description = "角色描述")
     private String description;
 
+    @Schema(description = "状态：1 启用 / 0 停用")
     private Integer status;
 
+    @Schema(description = "创建时间")
     private LocalDateTime createTime;
 
     public Long getId() {

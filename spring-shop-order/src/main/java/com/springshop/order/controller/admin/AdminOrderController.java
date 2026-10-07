@@ -10,8 +10,11 @@ import com.springshop.order.service.OrderExportService;
 import com.springshop.order.service.OrderService;
 import com.springshop.order.vo.OrderVO;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,15 +43,17 @@ public class AdminOrderController {
     }
 
     @Operation(summary = "订单分页（可按订单号/状态筛选）")
+    @ApiResponse(responseCode = "200", description = "分页返回后台订单列表")
     @PreAuthorize("hasAuthority('order:order:list')")
     @GetMapping
-    public Result<PageResult<OrderVO>> page(@Valid AdminOrderPageQuery query) {
+    public Result<PageResult<OrderVO>> page(@ParameterObject @Valid AdminOrderPageQuery query) {
         return Result.success(orderService.pageForAdmin(query));
     }
 
     @Operation(summary = "导出订单",
             description = "异步受理：按筛选条件导出全部命中订单，传 ids 则只导出选中的订单。"
                     + "立即返回任务号，完成后从任务中心下载文件")
+    @ApiResponse(responseCode = "200", description = "返回异步导出任务信息，可用任务号查询进度")
     @PreAuthorize("hasAuthority('order:order:list')")
     @PostMapping("/export")
     public Result<ExcelTaskVO> export(@RequestBody OrderExportQuery query) {
@@ -56,9 +61,10 @@ public class AdminOrderController {
     }
 
     @Operation(summary = "发货")
+    @ApiResponse(responseCode = "200", description = "发货成功，无返回数据")
     @PreAuthorize("hasAuthority('order:order:ship')")
     @PostMapping("/{orderNo}/ship")
-    public Result<Void> ship(@PathVariable String orderNo) {
+    public Result<Void> ship(@Parameter(description = "订单号") @PathVariable String orderNo) {
         orderService.ship(orderNo);
         return Result.success();
     }

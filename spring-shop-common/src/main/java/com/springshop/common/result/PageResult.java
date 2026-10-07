@@ -1,6 +1,7 @@
 package com.springshop.common.result;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
 
@@ -10,21 +11,22 @@ import java.util.List;
  * <p>前端列表接口统一返回该结构，字段与 MyBatis-Plus 的 {@link IPage} 对齐，
  * 由 {@link #of(IPage)} 从持久层分页结果转换，避免把持久层对象直接暴露给前端。
  */
+@Schema(description = "统一分页响应体")
 public class PageResult<T> {
 
-    /** 当前页数据 */
+    @Schema(description = "当前页数据")
     private List<T> records;
 
-    /** 总记录数 */
+    @Schema(description = "总记录数")
     private Long total;
 
-    /** 总页数 */
+    @Schema(description = "总页数")
     private Long pages;
 
-    /** 当前页码（从 1 开始） */
+    @Schema(description = "当前页码（从 1 开始）")
     private Long current;
 
-    /** 每页大小 */
+    @Schema(description = "每页大小")
     private Long size;
 
     public PageResult() {

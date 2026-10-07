@@ -5,6 +5,8 @@ import com.springshop.common.security.UserContext;
 import com.springshop.pay.service.PayService;
 import com.springshop.pay.vo.PayResultVO;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,8 +30,9 @@ public class PayController {
     }
 
     @Operation(summary = "模拟支付：订单待付款 → 待发货，返回支付结果")
+    @ApiResponse(responseCode = "200", description = "返回支付结果与支付流水信息")
     @PostMapping("/{orderNo}/mockPay")
-    public Result<PayResultVO> mockPay(@NotBlank @PathVariable String orderNo) {
+    public Result<PayResultVO> mockPay(@Parameter(description = "订单号") @NotBlank @PathVariable String orderNo) {
         return Result.success(payService.mockPay(UserContext.getUserId(), orderNo));
     }
 }

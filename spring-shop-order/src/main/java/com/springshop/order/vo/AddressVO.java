@@ -1,25 +1,36 @@
 package com.springshop.order.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 /**
  * 收货地址出参
  */
+@Schema(description = "收货地址出参")
 public class AddressVO {
 
+    @Schema(description = "地址 id")
     private Long id;
 
+    @Schema(description = "收货人姓名")
     private String receiverName;
 
+    @Schema(description = "收货人手机号")
     private String receiverPhone;
 
+    @Schema(description = "省份")
     private String province;
 
+    @Schema(description = "城市")
     private String city;
 
+    @Schema(description = "区/县")
     private String district;
 
+    @Schema(description = "详细地址")
     private String detailAddress;
 
     /** 是否默认地址 */
+    @Schema(description = "是否默认地址")
     private Boolean isDefault;
 
     public AddressVO() {

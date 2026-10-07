@@ -1,6 +1,7 @@
 package com.springshop.common.dto;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
@@ -11,14 +12,17 @@ import jakarta.validation.constraints.NotNull;
  * <p>所有列表查询接口继承此类，统一接收分页参数并提供默认值，
  * 避免每个 DTO 重复声明 current/size。
  */
+@Schema(description = "分页查询入参基类")
 public class PageQuery {
 
     /** 当前页码，从 1 开始 */
+    @Schema(description = "当前页码，从 1 开始，默认 1")
     @NotNull(message = "页码不能为空")
     @Min(value = 1, message = "页码必须大于等于 1")
     private Long current = 1L;
 
     /** 每页大小 */
+    @Schema(description = "每页大小，默认 10，最大 100")
     @NotNull(message = "每页大小不能为空")
     @Min(value = 1, message = "每页大小必须大于等于 1")
     @Max(value = 100, message = "每页大小不能超过 100")

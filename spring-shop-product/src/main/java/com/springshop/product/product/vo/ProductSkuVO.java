@@ -1,24 +1,34 @@
 package com.springshop.product.product.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.math.BigDecimal;
 
 /**
  * 商品 SKU 出参
  */
+@Schema(description = "商品 SKU")
 public class ProductSkuVO {
 
+    @Schema(description = "SKU id")
     private Long id;
 
+    @Schema(description = "SKU 编码")
     private String skuCode;
 
+    @Schema(description = "规格描述")
     private String specs;
 
+    @Schema(description = "销售价（元）")
     private BigDecimal price;
 
+    @Schema(description = "划线价/原价（元）")
     private BigDecimal originalPrice;
 
+    @Schema(description = "库存数量")
     private Integer stock;
 
+    @Schema(description = "状态：1-启用，0-停用")
     private Integer status;
 
     public ProductSkuVO() {

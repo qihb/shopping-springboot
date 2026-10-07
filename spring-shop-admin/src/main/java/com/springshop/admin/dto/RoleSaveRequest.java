@@ -1,24 +1,30 @@
 package com.springshop.admin.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 
 /**
  * 角色保存入参（新增 / 修改共用）
  */
+@Schema(description = "角色保存入参")
 public class RoleSaveRequest {
 
     /** 角色名称 */
+    @Schema(description = "角色名称")
     @NotBlank(message = "角色名称不能为空")
     private String name;
 
     /** 角色编码（唯一，如 ADMIN / OPERATOR） */
+    @Schema(description = "角色编码（唯一，如 ADMIN / OPERATOR）")
     @NotBlank(message = "角色编码不能为空")
     private String code;
 
     /** 角色描述 */
+    @Schema(description = "角色描述")
     private String description;
 
     /** 状态：1 启用 / 0 停用 */
+    @Schema(description = "状态：1 启用 / 0 停用")
     private Integer status;
 
     public String getName() {

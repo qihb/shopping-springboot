@@ -1,5 +1,7 @@
 package com.springshop.stats.vo;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -10,31 +12,44 @@ import java.time.LocalDateTime;
  * 作为游标，而该列并不存在于 {@code cart_recall_target} 表中。把查询专用字段塞进实体会让
  * 实体与表结构不再一一对应，因此单独用一个 VO 承载查询结果。
  */
+@Schema(description = "待召回候选条目（聚合查询的中间结果）")
 public class RecallCandidateVO {
 
     /** cart_item 主键，仅用作键集分页游标 */
+    @Schema(description = "cart_item 主键，仅用作键集分页游标")
     private Long cartItemId;
 
+    @Schema(description = "用户 id")
     private Long userId;
 
+    @Schema(description = "SKU id")
     private Long skuId;
 
+    @Schema(description = "商品 id")
     private Long productId;
 
+    @Schema(description = "商品名称")
     private String productName;
 
+    @Schema(description = "商品主图 URL")
     private String mainImage;
 
+    @Schema(description = "SKU 现价（元）")
     private BigDecimal skuPrice;
 
+    @Schema(description = "加购数量")
     private Integer quantity;
 
+    @Schema(description = "加购金额（元）= 现价 × 数量")
     private BigDecimal cartAmount;
 
+    @Schema(description = "首次加购时间（取自 cart_item.create_time）")
     private LocalDateTime addTime;
 
+    @Schema(description = "用户手机号（可空）")
     private String userPhone;
 
+    @Schema(description = "用户小程序 openid（可空）")
     private String userOpenid;
 
     public Long getCartItemId() { return cartItemId; }

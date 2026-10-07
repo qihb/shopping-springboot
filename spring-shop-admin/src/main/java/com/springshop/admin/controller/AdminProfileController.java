@@ -6,6 +6,7 @@ import com.springshop.admin.service.AdminAuthService;
 import com.springshop.common.result.Result;
 import com.springshop.common.security.UserContext;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -34,6 +35,7 @@ public class AdminProfileController {
     }
 
     @Operation(summary = "修改当前管理员密码", description = "需提供原密码")
+    @ApiResponse(responseCode = "200", description = "修改成功，无返回数据")
     @OperationLog(module = "系统管理", operation = "修改本人密码")
     @PutMapping("/password")
     public Result<Void> changePassword(@Valid @RequestBody AdminChangePasswordRequest request) {

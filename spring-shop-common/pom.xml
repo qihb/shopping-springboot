@@ -50,6 +50,11 @@
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-jackson</artifactId>
         </dependency>
+        <!-- OpenAPI 文档注解（@Schema）：仅为文档元信息，不含任何运行时逻辑 -->
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations-jakarta</artifactId>
+        </dependency>
         <!-- Excel 读写：ExcelSupport 是纯技术工具（无业务逻辑），放在 common 供各业务模块复用。
              选 Fesod（Apache 孵化版，原 EasyExcel 血统）而非裸 POI，原因是流式读写：
              读用 SAX 逐行回调、写按批刷缓存，上万行的导入导出不会把整表堆进堆内存。

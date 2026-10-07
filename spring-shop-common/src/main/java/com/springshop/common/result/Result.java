@@ -1,14 +1,20 @@
 package com.springshop.common.result;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 /**
  * 统一响应结果
  */
+@Schema(description = "统一响应结果")
 public class Result<T> {
 
+    @Schema(description = "业务状态码，200 表示成功，其余见各模块错误码")
     private Integer code;
 
+    @Schema(description = "提示信息，失败时为具体原因")
     private String message;
 
+    @Schema(description = "业务数据，失败时为 null")
     private T data;
 
     public Result() {

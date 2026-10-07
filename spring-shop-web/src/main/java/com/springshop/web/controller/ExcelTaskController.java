@@ -12,9 +12,12 @@ import com.springshop.common.result.Result;
 import com.springshop.common.result.ResultCode;
 import com.springshop.common.security.UserContext;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
@@ -58,16 +61,18 @@ public class ExcelTaskController {
     }
 
     @Operation(summary = "分页查询我的导入导出任务", description = "只返回当前登录管理员提交的任务")
+    @ApiResponse(responseCode = "200", description = "分页返回当前登录管理员提交的任务")
     @PreAuthorize("isAuthenticated()")
     @GetMapping
-    public Result<PageResult<ExcelTaskVO>> page(@Valid ExcelTaskPageQuery query) {
+    public Result<PageResult<ExcelTaskVO>> page(@ParameterObject @Valid ExcelTaskPageQuery query) {
         return Result.success(excelTaskService.page(query, UserContext.getUserId()));
     }
 
     @Operation(summary = "查询任务详情与进度", description = "前端轮询该接口刷新进度条")
+    @ApiResponse(responseCode = "200", description = "返回任务详情与进度")
     @PreAuthorize("isAuthenticated()")
     @GetMapping("/{taskNo}")
-    public Result<ExcelTaskVO> detail(@PathVariable String taskNo) {
+    public Result<ExcelTaskVO> detail(@Parameter(description = "任务编号") @PathVariable String taskNo) {
         return Result.success(excelTaskService.detail(taskNo, UserContext.getUserId()));
     }
 
@@ -87,7 +92,8 @@ public class ExcelTaskController {
     @Operation(summary = "下载任务结果", description = "导出任务下载结果文件；导入任务下载失败明细")
     @PreAuthorize("isAuthenticated()")
     @GetMapping("/{taskNo}/download")
-    public void download(@PathVariable String taskNo, HttpServletResponse response) throws IOException {
+    public void download(@Parameter(description = "任务编号") @PathVariable String taskNo,
+                         HttpServletResponse response) throws IOException {
         ExcelTask task = excelTaskService.getOwnedTask(taskNo, UserContext.getUserId());
         if (!ExcelTaskStatus.isFinished(task.getStatus())) {
             throw new BusinessException(ResultCode.EXCEL_TASK_NOT_FINISHED);

@@ -4,6 +4,7 @@ import com.springshop.common.result.Result;
 import com.springshop.product.category.service.CategoryService;
 import com.springshop.product.category.vo.CategoryNodeVO;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -26,6 +27,7 @@ public class AppCategoryController {
     }
 
     @Operation(summary = "获取启用分类树")
+    @ApiResponse(responseCode = "200", description = "返回启用分类树列表")
     @GetMapping("/tree")
     public Result<List<CategoryNodeVO>> tree() {
         return Result.success(categoryService.tree());

@@ -1,5 +1,7 @@
 package com.springshop.common.excel.task;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.time.LocalDateTime;
 
 /**
@@ -9,44 +11,63 @@ import java.time.LocalDateTime;
  * {@code progress}（百分比进度）与 {@code downloadable}（能否下载结果）。
  * 前端轮询只做展示，不需要复制一套状态判断逻辑。
  */
+@Schema(description = "异步导入导出任务")
 public class ExcelTaskVO {
 
+    @Schema(description = "任务编号")
     private String taskNo;
 
+    @Schema(description = "业务类型编码")
     private String bizType;
 
+    @Schema(description = "业务类型名称")
     private String bizName;
 
+    @Schema(description = "任务方向：1 导入 / 2 导出")
     private Integer taskType;
 
+    @Schema(description = "任务方向名称")
     private String taskTypeName;
 
+    @Schema(description = "任务状态：0 待执行 / 1 执行中 / 2 成功 / 3 失败")
     private Integer status;
 
+    @Schema(description = "任务状态名称")
     private String statusName;
 
+    @Schema(description = "结果文件名")
     private String fileName;
 
+    @Schema(description = "总行数")
     private Integer totalRows;
 
+    @Schema(description = "已处理行数")
     private Integer processedRows;
 
+    @Schema(description = "成功行数")
     private Integer successRows;
 
+    @Schema(description = "失败行数")
     private Integer failRows;
 
     /** 进度百分比（0~100）；导出任务没有可预期的总量，完成前恒为 0 */
+    @Schema(description = "进度百分比（0~100）；导出任务完成前恒为 0")
     private Integer progress;
 
     /** 是否可下载：导出任务需成功且有文件；导入任务需有失败明细 */
+    @Schema(description = "是否可下载：导出任务需成功且有文件；导入任务需有失败明细")
     private boolean downloadable;
 
+    @Schema(description = "失败原因，成功时为 null")
     private String errorMsg;
 
+    @Schema(description = "开始时间")
     private LocalDateTime startTime;
 
+    @Schema(description = "结束时间")
     private LocalDateTime endTime;
 
+    @Schema(description = "创建时间")
     private LocalDateTime createTime;
 
     public ExcelTaskVO() {

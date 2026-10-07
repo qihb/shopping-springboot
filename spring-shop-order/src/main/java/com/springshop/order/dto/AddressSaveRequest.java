@@ -1,5 +1,6 @@
 package com.springshop.order.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -7,33 +8,41 @@ import jakarta.validation.constraints.Size;
 /**
  * 收货地址新增/修改入参
  */
+@Schema(description = "收货地址新增/修改入参")
 public class AddressSaveRequest {
 
+    @Schema(description = "收货人姓名，不能超过 50 个字符")
     @NotBlank(message = "收货人姓名不能为空")
     @Size(max = 50, message = "收货人姓名不能超过 50 个字符")
     private String receiverName;
 
+    @Schema(description = "收货人手机号，11 位大陆手机号")
     @NotBlank(message = "收货人手机号不能为空")
     @Pattern(regexp = "^1[3-9]\\d{9}$", message = "收货人手机号格式不正确")
     private String receiverPhone;
 
+    @Schema(description = "省份")
     @NotBlank(message = "省份不能为空")
     @Size(max = 50, message = "省份不能超过 50 个字符")
     private String province;
 
+    @Schema(description = "城市")
     @NotBlank(message = "城市不能为空")
     @Size(max = 50, message = "城市不能超过 50 个字符")
     private String city;
 
+    @Schema(description = "区/县")
     @NotBlank(message = "区/县不能为空")
     @Size(max = 50, message = "区/县不能超过 50 个字符")
     private String district;
 
+    @Schema(description = "详细地址，不能超过 200 个字符")
     @NotBlank(message = "详细地址不能为空")
     @Size(max = 200, message = "详细地址不能超过 200 个字符")
     private String detailAddress;
 
     /** 是否设为默认地址，为空按「否」处理 */
+    @Schema(description = "是否设为默认地址，为空按「否」处理")
     private Boolean isDefault;
 
     public AddressSaveRequest() {

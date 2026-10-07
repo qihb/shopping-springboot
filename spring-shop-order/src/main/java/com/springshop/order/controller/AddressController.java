@@ -6,6 +6,7 @@ import com.springshop.order.dto.AddressSaveRequest;
 import com.springshop.order.service.AddressService;
 import com.springshop.order.vo.AddressVO;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -34,18 +35,21 @@ public class AddressController {
     }
 
     @Operation(summary = "我的地址列表（默认地址在前）")
+    @ApiResponse(responseCode = "200", description = "返回我的收货地址列表，默认地址在前")
     @GetMapping
     public Result<List<AddressVO>> list() {
         return Result.success(addressService.list(UserContext.getUserId()));
     }
 
     @Operation(summary = "新增地址")
+    @ApiResponse(responseCode = "200", description = "返回新增收货地址的 id")
     @PostMapping
     public Result<Long> create(@Valid @RequestBody AddressSaveRequest request) {
         return Result.success(addressService.create(UserContext.getUserId(), request));
     }
 
     @Operation(summary = "修改地址")
+    @ApiResponse(responseCode = "200", description = "修改成功，无返回数据")
     @PutMapping("/{id}")
     public Result<Void> update(@PathVariable Long id, @Valid @RequestBody AddressSaveRequest request) {
         addressService.update(UserContext.getUserId(), id, request);
@@ -53,6 +57,7 @@ public class AddressController {
     }
 
     @Operation(summary = "设为默认地址")
+    @ApiResponse(responseCode = "200", description = "设置成功，无返回数据")
     @PutMapping("/{id}/default")
     public Result<Void> setDefault(@PathVariable Long id) {
         addressService.setDefault(UserContext.getUserId(), id);
@@ -60,6 +65,7 @@ public class AddressController {
     }
 
     @Operation(summary = "删除地址")
+    @ApiResponse(responseCode = "200", description = "删除成功，无返回数据")
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable Long id) {
         addressService.delete(UserContext.getUserId(), id);

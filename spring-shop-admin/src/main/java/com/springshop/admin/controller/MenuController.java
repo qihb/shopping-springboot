@@ -6,6 +6,8 @@ import com.springshop.admin.service.MenuService;
 import com.springshop.admin.vo.MenuNodeVO;
 import com.springshop.common.result.Result;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -35,6 +37,7 @@ public class MenuController {
     }
 
     @Operation(summary = "查询菜单树")
+    @ApiResponse(responseCode = "200", description = "返回菜单树")
     @PreAuthorize("hasAuthority('system:menu:list')")
     @GetMapping("/tree")
     public Result<List<MenuNodeVO>> tree() {
@@ -42,6 +45,7 @@ public class MenuController {
     }
 
     @Operation(summary = "新增菜单")
+    @ApiResponse(responseCode = "200", description = "新增成功，无返回数据")
     @OperationLog(module = "系统管理", operation = "新增菜单")
     @PreAuthorize("hasAuthority('system:menu:create')")
     @PostMapping
@@ -51,19 +55,22 @@ public class MenuController {
     }
 
     @Operation(summary = "修改菜单")
+    @ApiResponse(responseCode = "200", description = "修改成功，无返回数据")
     @OperationLog(module = "系统管理", operation = "修改菜单")
     @PreAuthorize("hasAuthority('system:menu:update')")
     @PutMapping("/{id}")
-    public Result<Void> update(@PathVariable Long id, @Valid @RequestBody MenuSaveRequest request) {
+    public Result<Void> update(@Parameter(description = "菜单 id") @PathVariable Long id,
+                               @Valid @RequestBody MenuSaveRequest request) {
         menuService.update(id, request);
         return Result.success();
     }
 
     @Operation(summary = "删除菜单", description = "存在子节点时不可删除")
+    @ApiResponse(responseCode = "200", description = "删除成功，无返回数据")
     @OperationLog(module = "系统管理", operation = "删除菜单")
     @PreAuthorize("hasAuthority('system:menu:delete')")
     @DeleteMapping("/{id}")
-    public Result<Void> delete(@PathVariable Long id) {
+    public Result<Void> delete(@Parameter(description = "菜单 id") @PathVariable Long id) {
         menuService.delete(id);
         return Result.success();
     }
