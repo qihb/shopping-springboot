@@ -141,6 +141,11 @@ public class OrderServiceImpl implements OrderService {
                 .eq(CartItem::getUserId, userId)
                 .in(CartItem::getId, checkedItems.stream().map(CartItem::getId).toList()));
 
+        // 购物车行已被物理删除，必须同步失效购物车读缓存。
+        // 注意这里绕过了 CartServiceImpl（它自己的 delete / deleteChecked / clear 都会失效缓存），
+        // 漏掉这一步会让 GET /api/cart 在 7 天滑动 TTL 内一直返回已下单的条目。
+        evictCartCache(userId);
+
         // 下单成功（提交前）主动失效涉及商品的详情缓存：销量已变，防止详情页在缓存 TTL 内读到旧销量
         evictProductDetailCache(orderItems);
 
@@ -310,6 +315,14 @@ public class OrderServiceImpl implements OrderService {
             productSkuMapper.restoreStock(item.getSkuId(), item.getQuantity());
             productMapper.decreaseSales(item.getProductId(), item.getQuantity());
         }
+    }
+
+    /**
+     * 主动失效购物车读缓存：下单会物理删除勾选条目，缓存不同步失效会让购物车列表在
+     * 7 天滑动 TTL 内一直返回已下单的条目（脏读），用户表现为「下单后购物车没清空」。
+     */
+    private void evictCartCache(Long userId) {
+        stringRedisTemplate.delete(RedisKeys.cart(userId));
     }
 
     /**
