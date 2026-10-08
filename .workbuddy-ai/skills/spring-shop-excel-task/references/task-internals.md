@@ -20,6 +20,11 @@ DDL 本体在 `spring-shop-web/src/main/resources/db/migration/V8__excel_task.sq
 - **`params` 存序列化的查询对象**。导出跑在异步线程里，HTTP 请求早就结束了，
   只能把筛选条件随任务一起落库，worker 再还原回来。序列化/反序列化要走**和接口同一个
   ObjectMapper**（全局 `JacksonConfig`），否则自定义日期格式在两边表现不一致。
+  **序列化失败必须抛 `EXCEL_TASK_PARAMS_INVALID(47)`，绝不能降级成 `params = null`**：
+  执行侧把 null 解释成「不筛选」→ 导出整张表，而任务状态还是「成功」、文件照样能下载，
+  用户全程没有任何报错信号。四个生产导出服务都写了 `query == null ? new XxxQuery() : query`，
+  所以生产路径下 `params` 列出现 SQL NULL **只可能**意味着「条件被吞了」。
+  改动见 `ExcelTaskServiceImpl.writeParams` 与 `ExcelTaskServiceImplTest`（2026-10-08 修）。
 - **`task_no` 是唯一对外暴露的标识**。按方向加前缀（`I` = import / `E` = export），
   日志里一眼能看出方向；再加时间戳与随机后缀保证唯一。加唯一索引。
 - **`created_by` 是权限模型的基础**。任务中心不做权限码，靠它过滤「只能看自己的任务」。

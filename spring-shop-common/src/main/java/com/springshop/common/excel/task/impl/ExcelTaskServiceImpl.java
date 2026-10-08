@@ -283,6 +283,20 @@ public class ExcelTaskServiceImpl implements ExcelTaskService {
         return prefix + LocalDateTime.now().format(TASK_NO_TIME) + random;
     }
 
+    /**
+     * 序列化导出查询条件
+     *
+     * <p><b>失败必须抛异常，绝不能返回 null</b>。{@code params} 为 null 会被后台导出
+     * 解释成「没有筛选条件」，于是导出整张表。也就是说「吞掉异常返回 null」等于把
+     * 「条件丢了」偷偷降级成「导出全量」：用户拿到一个筛选完全失效、任务状态却是
+     * 「成功」的文件，全程没有任何报错信号 —— 这是无声的数据事故。
+     *
+     * <p>所以这里的选择是「宁可提交当场失败」：抛异常时任务行还没 insert，
+     * 不会留下任何需要清理的脏数据，用户改完筛选条件重提即可。
+     *
+     * <p>注意 {@code query == null} 与「序列化失败」是两回事：前者是调用方显式表达的
+     * 「不筛选」，是合法入参，仍然返回 null。
+     */
     private String writeParams(Object query) {
         if (query == null) {
             return null;
@@ -290,8 +304,8 @@ public class ExcelTaskServiceImpl implements ExcelTaskService {
         try {
             return objectMapper.writeValueAsString(query);
         } catch (Exception e) {
-            log.warn("序列化导出查询条件失败，导出将不带筛选条件", e);
-            return null;
+            log.error("序列化导出查询条件失败，拒绝受理该导出任务（业务类型 {}）", query.getClass().getName(), e);
+            throw new BusinessException(ResultCode.EXCEL_TASK_PARAMS_INVALID);
         }
     }
 

@@ -119,11 +119,23 @@ public class ExcelTaskContext {
     /**
      * 还原导出查询条件
      *
+     * <p><b>契约</b>：{@code null} 只表示调用方显式提交了「不筛选」（{@code query == null}），
+     * 此时导出全量是预期行为。写入侧 {@code ExcelTaskServiceImpl.writeParams} 已保证
+     * 「序列化失败」不会再退化成 null（它会直接拒绝受理任务），所以这里读到 null
+     * 就是一个明确的业务语义，而不是「条件丢了」的兜底。
+     *
+     * <p>反过来，「列里有值但解析不出来」一律抛异常：那说明数据被破坏或版本不兼容，
+     * 绝不能当成「没有条件」继续导出全量。
+     *
      * @return 未保存条件时返回 null（导出全量）
      */
     public <T> T params(Class<T> queryType) {
         String json = task.getParams();
         if (json == null || json.isBlank()) {
+            // 记一条日志：导出全量本身合法，但事后排查「为什么导出了整张表」时，
+            // 需要能区分「用户就是要全量」与「条件在某个环节被丢了」。
+            log.info("导出任务未保存查询条件，按全量导出（任务号 {}，业务类型 {}）",
+                    task.getTaskNo(), task.getBizType());
             return null;
         }
         try {

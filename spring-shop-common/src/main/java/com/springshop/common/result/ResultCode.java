@@ -19,6 +19,7 @@ public enum ResultCode {
     EXCEL_TASK_DISABLED(44, "导入导出功能当前不可用"),
     EXCEL_TASK_NOT_FINISHED(45, "任务尚未完成，暂时无法下载结果"),
     EXCEL_TASK_NO_RESULT(46, "任务没有可下载的结果文件"),
+    EXCEL_TASK_PARAMS_INVALID(47, "导出条件保存失败，请调整筛选条件后重新提交"),
 
     // 业务码：用户模块（1000 段）
     USERNAME_EXISTS(1001, "用户名已存在"),

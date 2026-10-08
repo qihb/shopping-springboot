@@ -26,7 +26,13 @@ public interface ExcelTaskService {
     /**
      * 建导出任务（待执行状态）
      *
-     * @param query 导出查询条件对象，会序列化成 JSON 存起来供后台线程还原
+     * <p><b>条件存不下来就拒绝建任务</b>，不会「降级成不带条件」：{@code params} 为 null
+     * 会被执行侧解释成「不筛选」从而导出整张表，那等于把「条件丢了」变成无声的全量导出。
+     *
+     * @param query 导出查询条件对象，会序列化成 JSON 存起来供后台线程还原；
+     *              传 {@code null} 表示显式要求「不筛选」（导出全量）
+     * @throws com.springshop.common.exception.BusinessException 条件无法序列化时抛出，
+     *         此时不会写入任何任务记录
      */
     ExcelTask createExportTask(String bizType, String bizName, Long adminId,
                                String fileName, Object query);
