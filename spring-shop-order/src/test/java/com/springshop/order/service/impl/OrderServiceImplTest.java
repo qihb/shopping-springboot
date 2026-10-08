@@ -228,6 +228,18 @@ class OrderServiceImplTest {
         assertEquals(3, wrapper.getParamNameValuePairs().size());
     }
 
+    @Test
+    void create_should_evict_cart_cache() {
+        stubSuccessfulCreate(List.of(cartItem(1L, 10L, 2)));
+
+        orderService.create(USER_ID, createRequest(5L));
+
+        // 下单会把购物车勾选行物理删除，缓存必须同步失效。
+        // 否则 GET /api/cart 会在 7 天滑动 TTL 内一直返回已下单的条目（脏读），
+        // 前端表现为「下单后购物车没清空、仍是勾选态」，点结算才报「没有勾选商品」。
+        verify(stringRedisTemplate).delete(RedisKeys.cart(USER_ID));
+    }
+
     // ---------------- 查询 ----------------
 
     @Test
