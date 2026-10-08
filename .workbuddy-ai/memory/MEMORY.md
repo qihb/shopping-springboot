@@ -28,7 +28,8 @@
 `CartServiceImpl` 自己的写路径（`add` / `updateQuantity` / `updateChecked` / `delete` /
 `deleteChecked` / `clear`）都会维护 `RedisKeys.cart(userId)`；
 **但绕过它、直接操作 `cartItemMapper` 的地方必须自己补失效**。
-已知会绕过它的地方：`OrderServiceImpl.create()`（下单删勾选行）—— 已修（`895b976`）。
+已知会绕过它的地方：`OrderServiceImpl.create()`（下单删勾选行）——
+**已修并已合入 main**（`895b976`，合并提交 `10a9864`，2026-10-08）。
 新增任何直接操作 `cart_item` 的代码时，先想一遍要不要失效 `cart:{userId}`。
 
 ## MCP 方案：已评估并否决（2026-10-08）
@@ -45,15 +46,15 @@ REST→MCP **不采用**，实验终止。**不要再评估或引入 MCP。**
 （开头已标记「终止，勿执行」）。MCP 评估技能 `skills/spring-shop-mcp-eval/`
 **已于 2026-10-08 按用户要求删除**（项目 skills 目录现只剩 `spring-shop-excel-task`）。
 
-## 未合入的实验分支
+## 分支状态
 
 | 分支 | 内容 | 状态 |
 |---|---|---|
-| `fix/cart-cache-invalidate-on-order` | 购物车缓存失效修复（`895b976`） | 待定是否合入 |
+| `fix/cart-cache-invalidate-on-order` | 购物车缓存失效修复（`895b976`） | ✅ **已合入 main**（合并提交 `10a9864`，2026-10-08） |
 
 > `feature/mcp-experiment`（实验四 Spring AI 进程内 MCP Server，`32fd2b5`）**已于 2026-10-08 删除**，
 > Go 工具链（271MB）、Go 缓存（154MB）、mcp-link 产物（15MB）一并清理。
-> 该分支**从未合入 main**，删除不影响 main（仍在 `27f5dd1`）。
+> 该分支**从未合入 main**，删除不影响 main。
 
 ## 已知未修的缺陷（按优先级）
 
