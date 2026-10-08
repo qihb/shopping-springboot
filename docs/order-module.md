@@ -9,7 +9,7 @@
 - **上游依赖**：`spring-shop-common`（统一响应、JSR303 校验、`UserContext`）、`spring-shop-product`（复用 SKU / 商品只读查询与库存、销量增减）、`spring-shop-cart`（复用购物车勾选条目的读取与清理）。
 - **下游被依赖**：`spring-shop-web`（启动模块），负责把 order 控制器扫入 Spring 容器、加载 Mapper。
 - **依赖方向**：`web → order → {cart, product} → common`，单向无环。order 只读商品数据、回写库存/销量，不改动 cart / product 的业务规则。
-- **当前范围**：收货地址 CRUD 与默认地址、购物车勾选项下单（快照 + 扣库存 + 清购物车）、我的订单分页 / 详情、支付 / 取消 / 确认收货、后台订单分页与发货。
+- **当前范围**：收货地址 CRUD 与默认地址、购物车勾选项下单（快照 + 扣库存 + 清购物车 + 失效缓存）、我的订单分页 / 详情、支付 / 取消 / 确认收货、后台订单分页 / 发货 / 异步导出、待付款超时自动取消。
 
 **核心要点：** order 是项目里第一个「跨模块编排」的业务模块——它不重复实现商品校验或购物车读写，而是复用 cart / product 已暴露的 Mapper 与只读能力，通过单向依赖把「下单」串成一条事务链。
 
@@ -21,13 +21,14 @@ spring-shop-order/
     ├── controller/OrderController.java              # 前台 /api/orders
     ├── controller/AddressController.java            # 前台 /api/addresses
     ├── controller/admin/AdminOrderController.java   # 后台 /api/admin/orders
-    ├── dto/{OrderCreateRequest, OrderPageQuery, AdminOrderPageQuery, AddressSaveRequest}.java
+    ├── dto/{OrderCreateRequest, OrderPageQuery, AdminOrderPageQuery, OrderExportQuery, AddressSaveRequest}.java
     ├── entity/{Order, OrderItem, ShippingAddress}.java
     ├── enums/OrderStatus.java
     ├── mapper/{OrderMapper, OrderItemMapper, ShippingAddressMapper}.java
-    ├── service/{OrderService, AddressService}.java
-    ├── service/impl/{OrderServiceImpl, AddressServiceImpl}.java
-    └── vo/{OrderVO, OrderItemVO, AddressVO}.java
+    ├── service/{OrderService, AddressService, OrderExportService}.java
+    ├── service/impl/{OrderServiceImpl, AddressServiceImpl, OrderExportServiceImpl}.java
+    ├── task/OrderTimeoutTask.java                   # 待付款超时自动取消（@Scheduled 60s）
+    └── vo/{OrderVO, OrderItemVO, AddressVO, OrderExportRow}.java
 ```
 
 - 与 cart 模块一致采用扁平分层（不按子域拆包），因为订单只有一个业务对象 + 收货地址这一附属对象。
@@ -122,6 +123,8 @@ sequenceDiagram
 - 在售校验 `requireOnSaleSku`：SKU 不在批量结果中 → `2011`；SKU `status != 1` 或所属商品不存在 / `status != 1` → `4003`。
 - 订单号规则：`yyyyMMddHHmmssSSS`（17 位）+ userId 后 3 位 + 3 位随机数，共 23 位，`uk_order_no` 兜底，不做重试。
 - `payAmount` 暂等于 `totalAmount`（无优惠券 / 运费）。
+- **缓存失效（易漏，务必保留）**：删完购物车行后必须补 `delete(RedisKeys.cart(userId))`。`create()` 是**绕过 `CartServiceImpl`** 直接操作 `cartItemMapper` 的，所以缓存不会自动失效 —— 曾经因此产生「下单后购物车仍显示且仍勾选」的脏读（TTL 是 7 天滑动过期，用户继续操作会不断续期），2026-10-08 修复（`895b976`）。同时下单 / 取消还会失效涉及商品的 `product:detail:{id}`（销量变了）。
+  > ⚠️ 这类问题**集成测试测不出来**：`OrderIntegrationTest` 用 `@MockBean StringRedisTemplate` 把 Redis mock 掉，缓存永远 miss、读路径永远回源 DB。所以单测必须断言「失效方法被调用」，见 `OrderServiceImplTest#create_should_evict_cart_cache`。
 
 ## 六、库存并发方案：条件更新扣减
 
@@ -216,7 +219,10 @@ stateDiagram-v2
 | 方法 | 路径 | 权限码 | 说明 |
 |------|------|--------|------|
 | GET | `/api/admin/orders` | `order:order:list` | 订单分页（`orderNo` 模糊 + `status` 过滤，不按用户隔离） |
+| POST | `/api/admin/orders/export` | `order:order:list` | 异步导出订单（JSON body，筛选字段与列表页一致），返回 `Result<ExcelTaskVO>` |
 | POST | `/api/admin/orders/{orderNo}/ship` | `order:order:ship` | 发货：待发货 → 待收货 |
+
+> 导出沿用列表权限码，不新增 `order:order:export`：「能看列表就能导出列表」是同一份数据的同一个权限。
 
 **安全配置零改动**：
 
@@ -230,19 +236,23 @@ stateDiagram-v2
 1. [AdminDataInitializer#buildMenus](spring-shop-admin/src/main/java/com/springshop/admin/config/AdminDataInitializer.java#L133-L135) 注册菜单与按钮权限：`订单管理`（目录）→ `订单列表`（`order:order:list`）→ `订单发货`（`order:order:ship`）。
 2. [AdminOrderController](spring-shop-order/src/main/java/com/springshop/order/controller/admin/AdminOrderController.java) 方法上标注同值 `@PreAuthorize("hasAuthority('order:order:list')")` / `hasAuthority('order:order:ship')`。
 
-**⚠️ 已初始化过的库不会自动补菜单：** `AdminDataInitializer` 只在 `adminUserMapper.selectCount(null) > 0` 为假（即 `admin_user` 表为空）时执行一次，之后即使新增了订单菜单代码也**不会再跑**。若本地库早已初始化，订单菜单不会自动出现，表现为后台请求 403。处理方式：
+**✅ 老库会自动补齐菜单（2026-10-03 起）**：`AdminDataInitializer` 已从早期的「`admin_user` 表非空就整体跳过」改为**逐项 find-or-create**（以 `menu.permission_code` 为幂等键，`ensureRoleMenus` 只增不减）。因此**新增菜单 / 按钮权限后，重启应用即可自动写入已有库并授予 ADMIN 角色**，不需要重建库、也不需要手工补菜单。
 
-- 重建库后重启（`DROP DATABASE spring_shop` 再 `mvn -pl spring-shop-web -am spring-boot:run`），让初始化器重新写入；
-- 或登录后台在「菜单管理」里手动补「订单管理 / 订单列表 / 订单发货」三个节点（注意权限码与 `@PreAuthorize` 完全一致），并给 ADMIN 角色授权。
+> 早期版本的坑（现已修复，留作背景）：那时初始化器只在 `admin_user` 表为空时执行一次，
+> 新增的订单菜单永远不会写进老库，表现为后台请求稳定 403、且代码看起来完全正确。
+> 该契约现由 `AdminDataInitializerUpgradeIntegrationTest` 钉住（4 个用例，用原生 SQL 物理删除造「老库」再重启验证补齐 + 幂等）；
+> 权限注册覆盖率由 `AdminPermissionCoverageIntegrationTest` 兜底（漏注册直接 CI 红灯）。
 
 ## 十一、测试基座
 
 ### 11.1 单元测试（纯 Mockito，无需 Spring / MySQL / Redis）
 
-- [OrderServiceImplTest](spring-shop-order/src/test/java/com/springshop/order/service/impl/OrderServiceImplTest.java)（17 用例）：
+- [OrderServiceImplTest](spring-shop-order/src/test/java/com/springshop/order/service/impl/OrderServiceImplTest.java)（22 用例）：
   - **下单**：地址越权 4001 / 无勾选条目 4002 / 勾选 SKU 已删 2011 / 商品下架 4003 / 扣减返回 0 得 4004 / 成功下单断言订单号长度 23 与收货快照、明细快照、状态=1 / **仅删除本次勾选条目**（校验删除 wrapper 含 `IN` 且占位符为 1 个 userId + N 个条目 id）。
   - **查询**：我的分页按用户+状态过滤并聚合明细 / 详情不存在 4005 / 详情含明细快照 / 后台分页不按用户隔离。
   - **状态流转**：pay→待发货 / pay 非法状态 4006 / cancel 回滚库存与销量并置 5 / confirm→已完成 / ship→待收货 / ship 订单不存在 4005。
+  - **缓存失效**：`create_should_evict_cart_cache`（下单后必须 `delete(RedisKeys.cart(userId))`）、下单/取消后失效涉及商品的 `product:detail:{id}`。
+- [OrderTimeoutTaskTest](spring-shop-order/src/test/java/com/springshop/order/task/OrderTimeoutTaskTest.java)（1 用例）：超时单被系统取消并逐条回滚库存/销量，非待付款单不处理。
 - [AddressServiceImplTest](spring-shop-order/src/test/java/com/springshop/order/service/impl/AddressServiceImplTest.java)（6 用例）：新增默认地址清旧默认 / 非默认不清 / 列表默认在前 / 修改越权 4001 / 设默认先清后设（`InOrder` 校验顺序） / 删除不存在 4001。
 
 两者都用 `@BeforeAll warmupMybatisPlusLambdaCache()` 手动 `TableInfoHelper.initTableInfo` 预热 `LambdaQueryWrapper` 的 lambda 元数据，类上 `@MockitoSettings(strictness = LENIENT)` 兼容共享桩。
@@ -277,10 +287,24 @@ mvn clean verify
 
 1. **真实支付网关与异步回调**：当前 `pay` 只是把状态从 1 改为 2 的模拟支付。
 2. **退款**：状态 `6 已退款` 已在枚举与建表脚本预留，但无任何接口写入。
-3. **待付款超时自动取消**：需 `@Scheduled` 定时任务扫描超时订单并回滚库存。
+3. ~~**待付款超时自动取消**~~：✅ **已落地**（`OrderTimeoutTask`，见第十三节）。
 4. **「立即购买」**：不经过购物车直接下单，需另开入参契约。
 5. **优惠券 / 运费 / 积分抵扣**：故当前 `payAmount == totalAmount`。
-6. **物流轨迹 / 发票 / 订单导出**：属于后续迭代规划。
+6. **物流轨迹 / 发票**：属于后续迭代规划。
+7. **订单导出**：✅ 已落地（`POST /api/admin/orders/export`，走公共异步任务框架）。
+
+## 十三、待付款超时自动取消（OrderTimeoutTask）
+
+[OrderTimeoutTask](spring-shop-order/src/main/java/com/springshop/order/task/OrderTimeoutTask.java)：
+
+- `@Scheduled(fixedDelay = 60_000)` 每 60 秒扫描一次，查 `status = 1（待付款）AND create_time < now - cancelMinutes` 的订单。
+- 超时线由 `order.timeout.cancel-minutes` 控制（**默认 30 分钟**，未在 `application.yml` 中显式配置时用代码默认值）。
+- 逐单调用 `OrderService#systemCancel(order)`，**单笔失败只记 `log.error`，不影响同批其余订单**。
+- `systemCancel` 与用户主动取消共用同一套回滚逻辑（`restoreStock` + `decreaseSales`），状态变更用**条件更新**（`WHERE id = ? AND status = 1`，影响 0 行即放弃、不抛错），因此与「用户支付」「用户取消」天然互斥：只有仍是待付款的单会被处理。
+- **无分布式锁**：`fixedDelay` 周期短、处理量小，且 `systemCancel` 本身幂等，加锁反而可能因锁竞争延迟取消时效。
+
+> 该任务目前**没有失败告警**，失败只在日志里留一行 error；也没有任务日志表。
+> 「新增任务缺统一基础设施」的问题与改造方案见 `docs/superpowers/plans/2026-10-03-scheduled-task-platform-options.md`。
 
 ## 十三、关键文件一览
 

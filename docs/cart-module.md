@@ -105,16 +105,26 @@ spring-shop-cart/
    - 商品不存在或 `status != 1` → 「商品已下架」；
 4. 汇总：`totalQuantity` 统计全部条目数量；`checkedQuantity` / `checkedAmount` **只统计有效且勾选的条目**（失效条目即使勾选也不计入结算）。
 
+### 6.4 Redis 读加速（DB 为主存，Redis 只做读加速）
+
+`RedisKeys.cart(userId)` → Hash `cart:{userId}`，field = `skuId`，value = `条目id|数量|是否勾选`，TTL 7 天滑动过期。
+
+- **读路径**：先读 Redis，命中直接返回；miss 则回源 DB 并**整车重建**缓存（空车也写占位符，避免缓存穿透）。
+- **写路径**：五个写操作（`add` / `updateQuantity` / `updateChecked`（含全选）/ `delete` / `deleteChecked` / `clear`）在 **DB 事务提交后**同步维护对应 field；Redis 异常只记日志，靠回源兜底，不影响主流程。
+- **责任边界（重要）**：缓存失效只由 `CartServiceImpl` 自己的写路径负责。**任何绕过它直接操作 `cartItemMapper` 的代码都必须自己补失效** —— 已发生过一次事故：`OrderServiceImpl.create()` 直接删 `cart_item`，导致下单后 `GET /api/cart` 在 TTL 内持续返回已下单条目（2026-10-08 已修复，`895b976`，并新增 `create_should_evict_cart_cache` 用例钉住）。
+- **测试约定**：缓存一致性**不能靠集成测试兜住** —— `CartIntegrationTest` / `OrderIntegrationTest` 都用 `@MockBean StringRedisTemplate` 把 Redis 整个 mock 掉，缓存永远 miss、读路径永远回源 DB，脏读在集成测试里根本不会出现。因此这类改动**单测必须断言「失效方法被调用」**（`verify(stringRedisTemplate).delete(RedisKeys.cart(userId))`），要验证真实一致性只能真连 Redis 实跑。
+
 ## 七、测试基座
 
 ### 7.1 单元测试
 
-[CartServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-cart/src/test/java/com/springshop/cart/service/impl/CartServiceImplTest.java)（27 用例，纯 Mockito，无需 Spring / MySQL / Redis）：
+[CartServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-cart/src/test/java/com/springshop/cart/service/impl/CartServiceImplTest.java)（38 用例，纯 Mockito，无需 Spring / MySQL / Redis）：
 
 - 写：加购新增 / 已存在累加并勾选 / **并发唯一键冲突退化为累加** / SKU 不存在 / 商品下架 / 规格停售 / 库存不足 / 累加后超库存；
 - 改：数量非法 / 条目不存在 / 库存不足 / SKU 已删 / 规格停售 / 正常更新；勾选更新 / 条目不存在；全选仅勾选有效条目 / 全不选 / 全部失效时不产生更新；
 - 删：条目不存在 / 越权（他人条目）不删 / 正常删除；删除已勾选 / 清空；
-- 读：空车汇总为 0 / 聚合（商品名、小计、总数、勾选数、勾选金额、失效标记）/ SKU 被删标记失效。
+- 读：空车汇总为 0 / 聚合（商品名、小计、总数、勾选数、勾选金额、失效标记）/ SKU 被删标记失效；
+- **缓存（Redis 读加速）**：命中缓存不查库 / miss 回源并整车重建 / 五个写操作各自 `verify` 失效被调用 / 空车也缓存占位符。
 
 沿用 MyBatis-Plus 预热：`@BeforeAll warmupMybatisPlusLambdaCache()` 手动 `TableInfoHelper.initTableInfo(CartItem/Product/ProductSku)`，避免 `LambdaQueryWrapper` 在打桩前因缺 lambda 元数据抛异常；类上 `@MockitoSettings(strictness = LENIENT)` 兼容共享桩。
 

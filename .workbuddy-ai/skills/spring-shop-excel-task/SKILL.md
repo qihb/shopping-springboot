@@ -132,7 +132,7 @@ agent_created: true
 | 症状 | 成因 |
 |---|---|
 | 表头被转置（3 行 × 1 列） | `head(List<List<String>>)` 是**列优先**的，传一个普通表头列表会被转置 |
-| 损坏文件读成 0 行而不报错 | 自动探测文件类型会**静默退化成 CSV**，必须显式传 `excelType(...)` |
+| 损坏文件读成 0 行而不报错 | 自动探测文件类型会**静默退化成 CSV**，必须显式指定：本项目用 `ExcelReadOptions.fileType(...)` / `fileTypeFromName(fileName)`（底层就是 Fesod 的 `excelType`，但**不要**绕过封装自己调） |
 | 回读报 `Can not find any sheet!` | Fesod **零行不建 sheet**，空集合也要走一遍 `write` |
 
 ## 测试铁律
@@ -160,7 +160,7 @@ agent_created: true
 | 任务卡在 RUNNING | worker 是否抛了未被捕获的异常；线程池是否被拒绝 |
 | 导出文件打不开 | 是否写入了表头（0 行场景）；`finish()` 是否被调用 |
 | 导入报「分类不存在」 | 库里是否有**多条同名分类** |
-| 读出来 0 行 | 是否显式传了 `excelType` |
+| 读出来 0 行 | 是否显式传了 `ExcelReadOptions.fileType(...)` |
 | 表头错乱 | `head()` 是否做了列优先转置 |
 
 ## Resources

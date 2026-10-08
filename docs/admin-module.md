@@ -82,11 +82,11 @@
 ```
 spring-shop-admin
 ├── controller   # 后台接口：登录、管理员账号、角色、菜单、操作日志、个人中心
-├── service      # 管理后台业务逻辑（含管理员 Excel 导入）
+├── service      # 管理后台业务逻辑（含管理员 Excel 导入 / 导出）
 ├── mapper       # 管理员 / 角色 / 菜单 / 审计日志访问
 ├── entity       # admin_user / role / menu / role_menu / operation_log 等实体
-├── dto          # 入参：登录、管理员增改、重置密码、分配角色、角色保存、菜单保存、日志查询
-├── vo           # 出参：管理员信息、角色、菜单树、导入结果、操作日志
+├── dto          # 入参：登录、管理员增改、重置密码、分配角色、角色保存、菜单保存、日志查询、导入导出查询
+├── vo           # 出参：管理员信息、角色、菜单树、操作日志、AdminUserExportRow / OperationLogExportRow
 ├── security     # AdminUserPrincipal / AdminUserDetailsService / AdminJwtAuthenticationFilter
 ├── aspect       # @OperationLog 注解与切面
 └── config       # AdminDataInitializer 初始数据注入
@@ -496,8 +496,9 @@ Fesod 读走 SAX 事件流、逐行回调，写按批刷缓存，**内存占用�
 | PUT | `/{id}/status` | `system:user:update` | 启用停用 |
 | PUT | `/{id}/password` | `system:user:reset` | 重置密码（管理员操作，不需原密码） |
 | PUT | `/{id}/roles` | `system:user:assign` | 分配角色（全量覆盖） |
-| POST | `/import` | `system:user:import` | Excel 批量导入 |
+| POST | `/import` | `system:user:import` | Excel 批量导入（异步受理，返回 `Result<ExcelTaskVO>`） |
 | GET | `/import/template` | `system:user:import` | 下载导入模板 |
+| POST | `/export` | `system:user:list` | 异步导出管理员（JSON body，筛选字段与列表页一致） |
 
 **没有 DELETE**：原因见上文「## 9」。停用即等价于删除。
 
@@ -566,19 +567,36 @@ Fesod 读走 SAX 事件流、逐行回调，写按批刷缓存，**内存占用�
 | PUT | `/api/admin/products/{id}/status` | `product:product:update` |
 | POST | `/api/admin/products/import` | `product:product:import` |
 | GET | `/api/admin/products/import/template` | `product:product:import` |
+| POST | `/api/admin/products/export` | `product:product:list` |
 
 ### 8. 订单管理（spring-shop-order 模块）
 
 | 方法 | 路径 | 权限 |
 |------|------|------|
 | GET | `/api/admin/orders` | `order:order:list` |
-| PUT | `/api/admin/orders/{id}/ship` | `order:order:ship` |
+| POST | `/api/admin/orders/export` | `order:order:list` |
+| POST | `/api/admin/orders/{orderNo}/ship` | `order:order:ship` |
 
 ### 9. 数据运营（spring-shop-stats 模块）
 
 | 方法 | 路径 | 权限 |
 |------|------|------|
-| GET/POST | `/api/admin/stats/recall/**` | `stats:recall:build` |
+| GET | `/api/admin/stats/recall/summary` | `stats:recall:list` |
+| GET | `/api/admin/stats/recall/products` | `stats:recall:list` |
+| GET | `/api/admin/stats/recall/targets` | `stats:recall:list` |
+| POST | `/api/admin/stats/recall/build` | `stats:recall:build` |
+
+### 10. 任务中心（`spring-shop-web` 模块，Excel 异步任务）
+
+| 方法 | 路径 | 权限 |
+|------|------|------|
+| GET | `/api/admin/excel-tasks` | 仅需登录（按 `created_by` 归属过滤） |
+| GET | `/api/admin/excel-tasks/{taskNo}` | 仅需登录（归属校验） |
+| GET | `/api/admin/excel-tasks/{taskNo}/download` | 仅需登录（归属校验） |
+
+> 任务中心刻意**不用权限码而用「归属」**：能提交任务说明已经过了权限码校验，
+> 查询 / 下载一律按 `created_by` 过滤，且「任务不存在」与「不是我的任务」返回同一个错误码（41），
+> 不给探测他人任务号的机会。
 
 ## 五、数据库与迁移
 
@@ -596,6 +614,13 @@ Fesod 读走 SAX 事件流、逐行回调，写按批刷缓存，**内存占用�
 - `role_menu`
 - `operation_log`
 
+Excel 异步任务框架（公共模块，管理后台是主要使用方）另占一个脚本：
+
+- `V8__excel_task.sql`（主库 + `migration-test` 副本）→ `excel_task` / `excel_task_error`
+
+> 全量迁移脚本现为 **V1~V8**：V1 用户 / V2 商品 / V3 订单与购物车 / V4 管理后台与权限 /
+> V5 支付 / V6 小程序 / V7 加购召回 / V8 Excel 任务。
+
 之所以主库和测试库各保留一套 V4，是因为 H2 对索引名全局唯一的限制比 MySQL 更严格，测试脚本需要做兼容处理。
 
 ## 六、当前实现的边界与后续补充建议
@@ -605,9 +630,11 @@ Fesod 读走 SAX 事件流、逐行回调，写按批刷缓存，**内存占用�
 - ✅ **管理员用户管理**：新增 / 修改 / 启用停用 / 重置密码 / 分配角色 / Excel 批量导入（**无删除**，见「## 9」）
 - ✅ **操作日志查询**：分页 + 多条件筛选，只读
 - ✅ **个人中心改密**：校验原密码
-- ✅ **商品管理后台**：分类、SPU、SKU、上下架，含 **Excel 批量导入**
-- ✅ **订单管理后台**：订单查询、发货
-- ✅ **数据运营**：加购未买召回圈人
+- ✅ **商品管理后台**：分类、SPU、SKU、上下架，含 **Excel 批量导入 + 异步导出**
+- ✅ **订单管理后台**：订单查询、发货、**异步导出**
+- ✅ **数据运营**：加购未买召回圈人（概览 / 选品 / 人群明细 / 手动重跑）
+- ✅ **Excel 异步任务框架**：统一的提交 → 轮询 → 下载链路，四类导出（商品 / 管理员 / 操作日志 / 订单）共用；
+  任务表 `excel_task` + 失败明细 `excel_task_error`，任务中心接口 `/api/admin/excel-tasks/**`（按归属过滤）
 - ✅ **权限实时性**：禁用 / 改角色下次请求即生效（见「## 10」）
 - ✅ **鉴权失败的 HTTP 语义**：`@PreAuthorize` 拒绝返回 403 + `Result.fail(FORBIDDEN)`，
   不再被兜底成「系统内部错误」（见 AGENTS.md「HTTP 状态码与业务码的分工」）
@@ -628,8 +655,12 @@ Fesod 读走 SAX 事件流、逐行回调，写按批刷缓存，**内存占用�
 2. **管理员的「删除」诉求**：如果确实需要释放用户名，正确做法是
    **新增一个独立的「账号回收」流程**（先改名为 `zhangsan_deleted_20261003` 之类的墓碑名，
    再逻辑删除），而不是直接删行。当前刻意不做。
-3. **导入的异步化**：现在导入是同步请求内完成，行数上限 1000（商品）/ 500（管理员）。
-   如果将来要支持上万行，需要改成「上传 → 异步任务 → 结果下载」的模式。
+3. ~~**导入的异步化**~~：✅ **已完成**（2026-10-03）。导入与导出全部改为「上传 → 异步任务 → 结果下载」，
+   商品上限 10 万行（`excel.task.max-import-rows`）、管理员 500 行，任务状态与失败明细落 `excel_task` / `excel_task_error` 表，
+   前端轮询 `/api/admin/excel-tasks/{taskNo}` 看进度。详见「## 11」。**仍未做**的是：
+   - **任务表无清理策略**：`excel_task` / `excel_task_error` 只增不删（只清磁盘文件），长期会膨胀；
+   - **无失败告警**：任务失败只落库 + 打日志，没有主动通知（最轻的补法是 `saveTaskLog` 里判 `status==0` 发企微/钉钉 webhook）；
+   - **导出分页是 OFFSET**：十万行导出期间若有并发写，结果集会漂移（重复或漏行）。
 4. **前端页面**：本文只覆盖后端接口，管理后台前端（菜单渲染、权限按钮、导入向导）不在本仓库。
 5. **操作日志的归档**：`operation_log` 目前只增不清理，长期需要按月归档或分区。
 

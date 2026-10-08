@@ -1,5 +1,12 @@
 # 后台账号管理 + 操作日志查询 + 商品/管理员 Excel 导入
 
+> **状态：已全部交付**（10/10 任务勾选）。本文档记录的是**当时的 POI 版实现**。
+> ⚠️ 后续独立需求「导入改 Fesod + 全链路异步 + 四类导出」**已交付并取代本文档的 Excel 部分**：
+> Excel 能力现基于 **Fesod**（`fesod-sheet`）而非 POI，导入导出全部走
+> `spring-shop-common` 的**异步任务框架**（`excel_task` 表 + 任务中心接口），
+> 详见 AGENTS.md「异步导入导出」与技能 `.workbuddy-ai/skills/spring-shop-excel-task/`。
+> 下文出现的「POI」「同步导入」等描述**已过时**，仅作历史留档。
+
 **Goal:** 补齐管理后台三块缺口——管理员账号管理（增改/启停/重置密码/分配角色，**不含删除**）、操作日志查询接口，以及商品与管理员两个 Excel 批量导入（**部分成功**语义），配套单测与 H2 集成测试全绿。
 
 **Architecture:** 账号管理与日志查询落在既有 `spring-shop-admin` 模块（复用双过滤链 + `@PreAuthorize` 菜单权限）；商品导入落在 `spring-shop-product`；Excel 能力以**薄封装**形式放在 `spring-shop-common`（POI），业务模块不直接引 POI。不新增模块、不改表结构。

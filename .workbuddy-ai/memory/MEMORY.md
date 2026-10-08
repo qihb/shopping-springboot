@@ -48,13 +48,28 @@ REST→MCP **不采用**，实验终止。**不要再评估或引入 MCP。**
 
 ## 分支状态
 
+`main` = `origin/main`（2026-10-08 核对），工作区干净。
+
 | 分支 | 内容 | 状态 |
 |---|---|---|
-| `fix/cart-cache-invalidate-on-order` | 购物车缓存失效修复（`895b976`） | ✅ **已合入 main**（合并提交 `10a9864`，2026-10-08） |
+| `fix/cart-cache-invalidate-on-order` | 购物车缓存失效修复（`895b976`） | ✅ **已合入 main**（合并提交 `10a9864`） |
+| `feature/order-timeout-cancel` | 订单超时自动取消 | ✅ 已合入 main，分支冗余 |
+| `feature/observability` | Actuator + traceId | ✅ 已合入 main，分支冗余 |
+| `feature/admin-user-log-import` | 后台账号管理 + 日志查询 + Excel 导入 | ✅ 已合入 main，分支冗余 |
 
+> 上述 4 个分支**本地与 remote 都还在**，均已合并、可清理（未获用户明确同意前不要删）。
 > `feature/mcp-experiment`（实验四 Spring AI 进程内 MCP Server，`32fd2b5`）**已于 2026-10-08 删除**，
 > Go 工具链（271MB）、Go 缓存（154MB）、mcp-link 产物（15MB）一并清理。
 > 该分支**从未合入 main**，删除不影响 main。
+
+## 用例数口径（易搞错，记一次）
+
+**全量 `mvn test` = 287 个用例**：common 17 / user 17 / admin 28 / product 40 / cart 38 /
+order 29 / pay 7 / stats 10 / web 101（2026-10-08 实测，BUILD SUCCESS）。
+
+⚠️ Maven 每个模块各打印一次 `Tests run: N`，**最后一行只是最后一个模块（web = 101）**，
+不是全 reactor 总数。此前日志里「全 reactor 101 用例」的说法就是这么误读来的，**已更正**。
+README 早期写的「255 用例」同样过时。
 
 ## 已知未修的缺陷（按优先级）
 

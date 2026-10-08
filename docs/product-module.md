@@ -9,9 +9,10 @@
 - **上游依赖**：`spring-shop-common`（统一响应、JSR303、MyBatis-Plus、JWT/安全注解）
 - **下游被依赖**：`spring-shop-web`（启动模块），`spring-shop-web` 负责把 product 模块的控制器扫入 Spring 容器并加载 Mapper。
 - **禁止依赖**：`spring-shop-admin`、`spring-shop-user`（保持模块单向依赖 `web → product → common`，避免环）
-- **当前范围（MVP）**：
-  - 分类子域：后台 CRUD + 前后台分类树
-  - 商品子域：SPU/SKU/Image 写服务 + 读服务聚合 + 前后台列表/详情接口
+- **当前范围**：
+  - 分类子域：后台 CRUD + 前后台分类树（分类树走 Redis 缓存）
+  - 商品子域：SPU/SKU/Image 写服务 + 读服务聚合 + 前后台列表/详情接口（详情走 Redis 缓存）
+  - 批量能力：Excel **异步**导入（部分成功 + 失败明细下载）与**异步**导出（边查边写，四类导出之一）
 
 ## 二、目录与分层结构
 
@@ -246,7 +247,7 @@ MVP 阶段未在 product 后台接口直接使用 admin 模块的 `@OperationLog
 > 所以新增权限标识后重启应用即可自动写入老库，不需要手工插库，也不会重复插入。
 > 早先「表非空就整体跳过」的写法会导致新权限永远进不了已有库，接口稳定 403。
 
-MVP 首次启动时由 data initializer 将上述菜单写入 `sys_menu`，配合 `product:category:list` / `product:product:list` 的菜单级权限被 Spring Security 的 `@PreAuthorize` 校验。
+MVP 首次启动时由 data initializer 将上述菜单写入 `menu` 表，配合 `product:category:list` / `product:product:list` 的菜单级权限被 Spring Security 的 `@PreAuthorize` 校验。
 
 ## 八、测试基座
 
@@ -254,12 +255,12 @@ MVP 首次启动时由 data initializer 将上述菜单写入 `sys_menu`，配�
 
 全部使用 JUnit5 + Mockito，运行无需 MySQL/Redis。
 
-- [CategoryServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/category/service/impl/CategoryServiceImplTest.java)（5 用例）：create/updateNotFound/deleteHasChildren/getById/tree。打桩小技巧：`selectCount(Wrappers.<ProductCategory>lambdaQuery().eq(...))` 的严格匹配会触发 Mockito `PotentialStubbingProblem`，替换为 `any()` 即可。
-- [ProductManageServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductManageServiceImplTest.java)（5 用例）：SKU 空、分类不存在、SKU 编码重复、创建成功、上下架不存在。
-- [ProductQueryServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductQueryServiceImplTest.java)（5 用例）：adminDetail 不存在 / appDetail 不存在 / appDetail 下架 / adminDetail 聚合 / adminPage 分页+分类名+最低价。
+- [CategoryServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/category/service/impl/CategoryServiceImplTest.java)（9 用例）：create/updateNotFound/deleteHasChildren/deleteHasProducts/getById/tree，以及**分类树缓存**（命中不查库、miss 回源并写入、增删改后失效）。打桩小技巧：`selectCount(Wrappers.<ProductCategory>lambdaQuery().eq(...))` 的严格匹配会触发 Mockito `PotentialStubbingProblem`，替换为 `any()` 即可。
+- [ProductManageServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductManageServiceImplTest.java)（8 用例）：SKU 空、分类不存在、SKU 编码重复、创建成功、上下架不存在，以及**写后失效商品详情缓存**（`verify(stringRedisTemplate).delete(RedisKeys.productDetail(id))`）。
+- [ProductQueryServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductQueryServiceImplTest.java)（9 用例）：adminDetail 不存在 / appDetail 不存在 / appDetail 下架 / adminDetail 聚合 / adminPage 分页+分类名+最低价，以及**商品详情缓存**（命中直接返回、miss 回源写缓存、商品不存在时写 `NULL` 占位符并给短 TTL 防穿透）。
   - 单测预热 MyBatis-Plus Lambda cache：`@BeforeAll warmupMybatisPlusLambdaCache()` 手动 `TableInfoHelper.initTableInfo`，否则 `LambdaQueryWrapper` 在走 Mockito 打桩前因无 lambda 元数据抛异常。
   - 存在一些共享桩，类上使用 `@MockitoSettings(strictness = Strictness.LENIENT)` 规避 UnnecessaryStubbingException。
-- [ProductImportServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductImportServiceImplTest.java)（11 用例）：同名多行聚合为一个 SPU、分类不存在整组失败、同名分类歧义、SKU 编码重复、价格精度、状态非法、空文件 / 非 Excel 后缀、模板可解析等。
+- [ProductImportServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductImportServiceImplTest.java)（14 用例）：同名多行聚合为一个 SPU、分类不存在整组失败、同名分类歧义、SKU 编码重复、价格精度、状态非法、空文件 / 非 Excel 后缀、模板可解析等。
   - 这个测试**真的生成 xlsx**：用 `ExcelSupport.write(...)` 造字节数组，再包成 `MockMultipartFile` 喂给 service，
     比手写 `InputStream` 更贴近真实链路，也顺带覆盖了读写两个方向。
   - 同样需要 `@BeforeAll warmupMybatisPlusLambdaCache()`（实体：`Product` / `ProductSku` / `ProductCategory`）。
@@ -286,7 +287,7 @@ MVP 首次启动时由 data initializer 将上述菜单写入 `sys_menu`，配�
 > 这两个新测试类同样必须带齐 4 项注解（`@SpringBootTest` + `@AutoConfigureMockMvc` + `@ActiveProfiles("test")` + `@Transactional`）
 > 和 `@MockBean StringRedisTemplate`，否则在 CI 上会因缺 Redis 或数据串场而挂。
 
-[ProductImportMultipartIntegrationTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/test/java/com/springshop/web/ProductImportMultipartIntegrationTest.java)（5 用例）：
+[ProductImportMultipartIntegrationTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/test/java/com/springshop/web/ProductImportMultipartIntegrationTest.java)（6 用例）：
 **唯一一个用真实 Tomcat 的集成测试**，`webEnvironment = RANDOM_PORT` + `TestRestTemplate`。
 
 - 存在的理由：MockMvc 的 `multipart()` 是**伪造**请求（构造 `MockMultipartHttpServletRequest`），
@@ -306,7 +307,8 @@ MVP 首次启动时由 data initializer 将上述菜单写入 `sys_menu`，配�
 
 - 前台商品详情访问下架 SPU 断言 code = 2014；
 - SKU 编码重复跨商品的创建失败场景；
-- 导入超过 1000 行断言被拒绝。
+- 导入超过 `excel.task.max-import-rows`（默认 10 万行）断言被拒绝；
+- 导出期间并发改数据，验证 OFFSET 分页是否出现重复/漏行（见「九、后续迭代建议」第 9 条）。
 
 ### 8.3 运行命令
 
@@ -325,12 +327,14 @@ mvn clean test
 
 1. **操作日志**：在 admin 模块扩展 AOP 切点，对路径匹配 `/api/admin/**` 的 controller 调用统一记录（解决 product 不引用 admin 的分层约束）。目前 product / order 的后台写接口**没有**审计日志，只有 admin 模块自己的接口带 `@OperationLog`。
 2. **写服务性能**：当前 SKU/Image 更新是「先 delete 再重插」，后续可改为按 id 做真正增量 upsert，减少 delete+insert 对索引/自增 ID 的冲击；大量 SKU 时可走批量 insert（导入路径同样逐条 insert，行数上限内可接受）。
-3. **读服务缓存**：分类树、商品列表/详情命中率高，后续接 Redis 缓存 key（`product:category:tree`、`product:detail:{id}`、`product:page:{pageNum}:{size}:{filters}`），配合写后失效。
+3. ~~**读服务缓存**~~：✅ **已落地**。分类树走 `RedisKeys.categoryTree()`（`category:tree`，TTL 1 小时，增删改后 DEL）；商品详情走 `RedisKeys.productDetail(id)`（`product:detail:{id}`，TTL 30 分钟 + 0~5 分钟随机抖动避免集中过期；商品不存在时写 `"NULL"` 占位符 + 60 秒短 TTL 防穿透；上下架/改价后 DEL）。**仍未做**的是商品列表页缓存（`product:page:{...}`）—— 筛选组合多、失效面大，收益暂不明确。
 4. **sku_code 唯一校验的并发窗口**：当前 DB 已建 `uk_sku_code`，业务代码仅做前置提示（导入路径已按索引口径预查，见 5.4）。若并发创建不同商品但 sku_code 相同，最终会由数据库唯一约束抛 DataIntegrityViolationException，后续可在 `GlobalExceptionHandler` 统一转成 2012。
 5. **SKU 启用/停用**：`ProductSku.status` 已落库，当前查询未区分 status。MVP 按「全部返回」简化；后续 minPrice、前台展示仅统计 status=1 的 SKU。
 6. **富文本安全**：Product.detail 是 HTML 富文本，后续上线前台展示前增加 XSS 过滤（Spring Security headers + 内容清洗库）。
 7. **查询条件扩展**：关键词模糊目前仅对 `name like`；后续可扩 `subtitle`、`category_id 递归子分类`、品牌等更贴近电商实际搜索。
-8. **导入异步化**：现在导入在同步请求内完成（商品 1000 行上限）。若要支持上万行，需要改成「上传 → 异步任务 → 结果下载」，同时把当前「部分成功」的结果从响应体改为可下载的结果文件。
+8. ~~**导入异步化**~~：✅ **已落地**。导入/导出已改为「上传 → 异步任务 → 结果下载」（`ExcelTaskExecutor` + `excel-task` 线程池），行数上限提升到 `excel.task.max-import-rows`（默认 10 万行），部分成功的结果改为可下载的失败明细文件。详见 5.4 / 5.5。
+9. **导出分页仍是 OFFSET**：`ExcelExportSupport` 用 `Page<>(current, pageSize, false)` 逐页取数，十万行导出期间若有并发插入/删除，结果集会漂移（重复或漏行）。建议改 keyset 分页（`WHERE id < lastId ORDER BY id DESC LIMIT n`）。
+10. **导入表头不校验**：列位置按下标常量（`COL_XXX = 0/1/2...`）取值，用户把两列对调后导入仍会「成功」，只是数据串列。缺少模板版本号与表头内容比对。
 
 ## 十、关键修改文件一览（按 task commit 顺序）
 
@@ -349,9 +353,8 @@ mvn clean test
 
 ### 批量导入相关（后加）
 
-- [ExcelSupport.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-common/src/main/java/com/springshop/common/excel/ExcelSupport.java) / [ExcelRow.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-common/src/main/java/com/springshop/common/excel/ExcelRow.java) / [ImportError.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-common/src/main/java/com/springshop/common/excel/ImportError.java)（POI 薄封装，公共模块）
-- [ProductImportServiceImpl.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/service/impl/ProductImportServiceImpl.java)
-- [ProductImportResultVO.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/vo/ProductImportResultVO.java)
+- [ExcelSupport.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-common/src/main/java/com/springshop/common/excel/ExcelSupport.java) / [ExcelRow.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-common/src/main/java/com/springshop/common/excel/ExcelRow.java) / [ImportError.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-common/src/main/java/com/springshop/common/excel/ImportError.java) / [ExcelStreamWriter.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-common/src/main/java/com/springshop/common/excel/ExcelStreamWriter.java) / [ExcelExportSupport.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-common/src/main/java/com/springshop/common/excel/ExcelExportSupport.java)（**Fesod** 薄封装，公共模块；不再使用 POI）
+- [ProductImportServiceImpl.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/service/impl/ProductImportServiceImpl.java) / [ProductExportServiceImpl.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/service/impl/ProductExportServiceImpl.java) / [ProductExportRow.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/vo/ProductExportRow.java)
 - [ProductSkuMapper.selectOccupiedSkuCodes](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/product/mapper/ProductSkuMapper.java)（与唯一索引口径一致的占用查询）
 - [AdminProductController.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/controller/admin/AdminProductController.java)（`/import` 与 `/import/template`）
 - [ProductImportServiceImplTest.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductImportServiceImplTest.java)

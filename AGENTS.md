@@ -8,7 +8,7 @@
 - **项目定位**：生产级 Java 电商网站后端，单体应用架构（可扩展）
 - **基础框架**：Spring Boot 3.5.16 + Maven 多模块 + Java 21
 - **持久层**：MyBatis-Plus 3.5.17 + MySQL 8
-- **当前状态**：用户、商品、购物车、订单、支付、管理后台六大业务模块已全部交付（注册/登录/JWT 认证、RBAC 权限中心、操作审计、下单库存扣减、模拟支付），测试基座与 CI 已就绪
+- **当前状态**：用户、商品、购物车、订单、支付、管理后台、数据运营七大业务模块已全部交付（注册/登录/JWT 认证、RBAC 权限中心、操作审计、下单库存扣减、模拟支付、加购未买召回圈人），测试基座与 CI 已就绪
 
 ## 技术栈
 
@@ -19,7 +19,11 @@
 | Maven | - | 构建工具 |
 | MyBatis-Plus | 3.5.17 | ORM / 持久层 |
 | MySQL | 8.x | 数据库 |
-| Redis | 6.x | 缓存（登录失败锁定、token 黑名单） |
+| Redis | 6.x | 缓存（登录失败锁定、token 黑名单、分类树 / 商品详情 / 购物车读加速、任务锁） |
+| Flyway | - | 版本化数据库迁移（当前 V1~V8） |
+| Fesod（Apache 孵化版 EasyExcel） | `fesod-sheet` | Excel 流式读写（只在 common 封装，业务模块不直接依赖） |
+| springdoc-openapi | - | 接口文档（Swagger UI + `@Tag` / `@Operation` / `@Schema`） |
+| Spring Boot Actuator + Micrometer | - | 指标暴露（`/actuator/health`、`/actuator/prometheus`）与 traceId 贯穿 |
 | spring-boot-starter-validation | - | 参数校验 |
 | JUnit 5 + Mockito + H2 | - | 测试：单元测试 + 接口集成测试（H2 以 MySQL 模式跑迁移脚本） |
 
@@ -201,6 +205,18 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
 | 44 | `EXCEL_TASK_DISABLED` 导入导出功能已关闭 |
 | 45 | `EXCEL_TASK_NOT_FINISHED` 任务尚未完成，暂时无法下载 |
 | 46 | `EXCEL_TASK_NO_RESULT` 没有可下载的结果文件 |
+| 47 | `EXCEL_TASK_PARAMS_INVALID` 导出条件保存失败，请调整筛选条件后重新提交 |
+
+**已占用的 1000 段（user）**：
+
+| 码 | 含义 |
+|----|------|
+| 1001 | `USERNAME_EXISTS` 用户名已存在 |
+| 1002 | `USER_NOT_FOUND` 用户不存在 |
+| 1003 | `PASSWORD_ERROR` 用户名或密码错误 |
+| 1004 | `USER_DISABLED` 账号已被禁用 |
+| 1005 | `USER_LOCKED` 登录失败次数过多，账号已临时锁定，请稍后再试 |
+| 1006 | `MINIAPP_AUTH_FAILED` 小程序登录失败，请稍后重试 |
 
 **已占用的 2000 段（product）**：
 
@@ -215,6 +231,26 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
 | 2013 | `PRODUCT_SKU_EMPTY` 商品至少需要一个 SKU |
 | 2014 | `PRODUCT_OFF_SHELF` 商品已下架 |
 | 2020 | `PRODUCT_IMPORT_FILE_INVALID` 导入文件不合法，请下载模板后重新填写 |
+
+**已占用的 3000 段（cart）**：
+
+| 码 | 含义 |
+|----|------|
+| 3001 | `CART_ITEM_NOT_FOUND` 购物车条目不存在 |
+| 3002 | `CART_QUANTITY_INVALID` 购买数量不合法 |
+| 3003 | `CART_STOCK_INSUFFICIENT` 库存不足 |
+| 3004 | `CART_SKU_DISABLED` 该规格已停售 |
+
+**已占用的 4000 段（order）**：
+
+| 码 | 含义 |
+|----|------|
+| 4001 | `ORDER_ADDRESS_NOT_FOUND` 收货地址不存在 |
+| 4002 | `ORDER_CART_EMPTY` 请先勾选要下单的商品 |
+| 4003 | `ORDER_SKU_UNAVAILABLE` 商品已下架或规格已停售 |
+| 4004 | `ORDER_STOCK_INSUFFICIENT` 商品库存不足 |
+| 4005 | `ORDER_NOT_FOUND` 订单不存在 |
+| 4006 | `ORDER_STATUS_ILLEGAL` 当前订单状态不支持该操作 |
 
 **已占用的 5000 段（admin）**：
 
@@ -234,6 +270,14 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
 | 5012 | `ADMIN_ROLE_IN_USE` 角色已分配给管理员，不可删除 |
 | 5020 | `ADMIN_MENU_NOT_FOUND` 菜单不存在 |
 | 5021 | `ADMIN_MENU_HAS_CHILDREN` 菜单存在子节点，不可删除 |
+
+**已占用的 6000 段（pay）**：
+
+| 码 | 含义 |
+|----|------|
+| 6001 | `PAY_ORDER_NOT_FOUND` 订单不存在 |
+| 6002 | `PAY_FORBIDDEN` 无权支付该订单 |
+| 6003 | `PAY_STATUS_ILLEGAL` 订单当前状态不可支付 |
 
 **已占用的 7000 段（stats）**：
 
@@ -339,7 +383,7 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
   启动失败只剩退出码 1，排查时无从下手。
 - **不要在 `<configuration>` 里直接再写一个 `<root>`** 来做兜底：Logback 对多个 `<root>` 是**累加 appender**
   而不是覆盖，会导致 `dev`/`prod` 下同一行日志打印两遍。用 `springProfile name="!dev & !prod"` 才是正确写法。
-- `test` profile 的数据源在 `src/test/resources/application-test.yml`（测试作用域，**不会打进 jar**），
+- `test` profile 的数据源在 `spring-shop-web/src/test/resources/application-test.yml`（测试作用域，**不会打进 jar**），
   它只服务于 `mvn test`，**不能**用 `java -jar --spring.profiles.active=test` 启动应用。
 
 ### MyBatis-Plus 约定
@@ -532,12 +576,18 @@ mvn compile
 # 运行全部测试（单元 + 集成，使用 H2 内存库，无需本地 MySQL）
 mvn test
 
-# 运行 web 模块
-mvn -pl spring-shop-web -am spring-boot:run
+# 启动（推荐：先 package，再跑可执行 jar）
+java -jar spring-shop-web/target/spring-shop-web-1.0.0.jar
 
 # 启动后健康检查
 curl http://localhost:6001/api/health
 ```
+
+> ⚠️ **不要用 `mvn -pl spring-shop-web -am spring-boot:run`**：`-am` 会把父聚合 POM
+> （`spring-shop`，packaging = pom）拉进反应堆，`spring-boot:run` 是普通 goal、会先在它上面执行，
+> 报 `Unable to find a suitable main class`。要用 `spring-boot:run` 就去掉 `-am`，
+> 但前提是兄弟模块已 `mvn install` 到本地仓库。
+> 复现反应堆范围：`mvn -pl spring-shop-web -am validate`（会构建 10 个模块，第 1 个是 `spring-shop`）。
 
 ## 工作流规范
 

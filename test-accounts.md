@@ -63,4 +63,10 @@ mysql -h127.0.0.1 -P3306 -uroot -proot --default-character-set=utf8mb4 spring_sh
 | 入口 | 地址 |
 |------|------|
 | Swagger UI | http://localhost:6001/swagger-ui.html |
-| 健康检查 | http://localhost:6001/api/health |
+| OpenAPI JSON | http://localhost:6001/v3/api-docs |
+| 健康检查（业务） | http://localhost:6001/api/health |
+| 健康检查（Actuator） | http://localhost:6001/actuator/health |
+| 指标（Prometheus） | http://localhost:6001/actuator/prometheus |
+| 后台任务中心（Excel 异步任务） | `GET http://localhost:6001/api/admin/excel-tasks`（需管理员 token，只看自己的任务） |
+
+> Actuator 只暴露 `health,info,metrics,prometheus`，且 `show-details: never`（生产安全默认）。

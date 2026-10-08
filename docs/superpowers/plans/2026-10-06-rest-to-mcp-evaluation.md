@@ -27,6 +27,10 @@
 | 代码分支 | 删 `feature/mcp-experiment`（原提交 `32fd2b5`，仅本地，未合入 main） | — |
 | MCP 评估技能 | 删 `.workbuddy-ai/skills/spring-shop-mcp-eval/`（SKILL.md + 2 个 reference + SSE 探针脚本） | 28 KB |
 
+> ⚠️ **下文 Task 4 里提到的 `spring-shop-web/src/main/java/com/springshop/web/mcp/ProductMcpTools.java`、
+> `McpToolConfig.java` 等文件现在都不存在**（随分支删除），本文档中出现的这些路径仅为历史记录，
+> 不要在代码库里找它们。已核实 `target/spring-shop-web-1.0.0.jar` 里也没有 `web/mcp/` 类。
+
 > **更正**：Task 2 里那条「残留清理：`pkill -f "mcp-link serve"` + `rm -rf /tmp/mcp-link`」的 checkbox
 > 当时勾成了「已完成」，但复核发现**进程停了、目录没删**。上述清理是 2026-10-08 真正补做的，
 > 那条记录与事实的偏差至此已经消除。

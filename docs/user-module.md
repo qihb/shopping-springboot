@@ -7,7 +7,7 @@
 ```
 spring-shop-user（业务模块，依赖 common）
 ├── controller
-│   ├── AuthController      # 认证接口：注册 / 登录 / 小程序登录（匿名可访问）
+│   ├── AuthController      # 认证接口：注册 / 登录 / 小程序登录 / 退出登录（注册登录类匿名可访问）
 │   └── UserController      # 用户接口：当前用户信息（需登录）
 ├── service
 │   ├── UserService         # 接口
@@ -85,6 +85,16 @@ spring-shop-web（启动模块）
 1. 认证过滤器已把 userId 写入 `UserContext`，Controller 直接 `UserContext.getUserId()`
 2. 查库 → 转 VO 返回；查不到抛 `USER_NOT_FOUND(1002)`
 
+### 4. 退出登录 `POST /api/auth/logout`（匿名，请求头带 token）
+
+把当前 token 写入 Redis 黑名单 `RedisKeys.userTokenBlacklist(token)`，TTL 与 JWT 有效期一致 ——
+token 自然过期后黑名单自动清理。认证过滤器每次请求都会 `hasKey` 校验黑名单，命中则不设置认证 → 401。
+这是 JWT 无状态前提下实现「主动失效」的唯一手段（后台管理员侧同款机制）。
+
+### 5. 小程序登录 `POST /api/auth/miniapp/login`（匿名）
+
+见第八节第 3 小节。
+
 ## 四、登录逻辑流程图
 
 ```mermaid
@@ -92,17 +102,29 @@ flowchart TD
     A[客户端 POST /api/auth/login<br/>携带 username + password] --> B{@Valid 参数校验}
     B -- 失败 --> B1[GlobalExceptionHandler<br/>返回 400 参数错误]
     B -- 通过 --> C[UserServiceImpl.login]
-    C --> D[userMapper.selectOne<br/>按 username 查库]
+    C --> C1{Redis 失败计数 >= 5?<br/>user:login:fail:username}
+    C1 -- 是 --> C2[抛 BusinessException<br/>USER_LOCKED 1005]
+    C1 -- 否 --> D[userMapper.selectOne<br/>按 username 查库]
     D --> E{user 存在?}
     E -- 否 --> F[抛 BusinessException<br/>PASSWORD_ERROR 1003<br/>统一提示用户名或密码错误]
     E -- 是 --> G{passwordEncoder.matches<br/>明文 vs BCrypt 密文?}
     G -- 不匹配 --> F
     G -- 匹配 --> H{user.status == 1?}
     H -- 否 --> I[抛 BusinessException<br/>USER_DISABLED 1004]
-    H -- 是 --> J[jwtTokenProvider.generateToken<br/>subject=username, claim=userId + userType=USER<br/>过期 2h, HS256 签名]
-    J --> K[返回 LoginResponse<br/>token + UserInfoVO]
-    K --> L[前端保存 token<br/>后续请求头带 Authorization: Bearer token]
+    H -- 是 --> J[Redis 失败计数清零]
+    J --> K[jwtTokenProvider.generateToken<br/>subject=username, claim=userId + userType=USER + clientId<br/>过期 2h, HS256 签名]
+    K --> L[返回 LoginResponse<br/>token + UserInfoVO]
+    L --> M[前端保存 token<br/>后续请求头带 Authorization: Bearer token]
+    F --> N[失败计数 +1<br/>首次写入时设 TTL 15 分钟]
 ```
+
+> **锁定机制**：连续失败 5 次锁定 15 分钟（`MAX_LOGIN_FAIL_COUNT` / `LOCK_MINUTES`）。
+> 计数放 Redis 而非数据库 —— 高频写、可容忍丢失、且天然带 TTL。
+> 注意 `increaseFailCount` 只在计数**首次**变 1 时设 TTL，所以是「首次失败起算的滑动窗口」而非「每次失败续期」。
+> 登录成功后立即清零，避免误伤。
+>
+> **退出登录**：`POST /api/auth/logout` 把 token 写进 Redis 黑名单（`user:token:blacklist:{token}`），
+> 认证过滤器每请求校验，实现 JWT 的「主动失效」。后台管理员侧是同款机制。
 
 ## 五、认证请求链路（每次请求都走一遍）
 
@@ -135,6 +157,8 @@ sequenceDiagram
 **关键点**：
 
 - 过滤器挂在 `UsernamePasswordAuthenticationFilter` **之前**（`addFilterBefore`）
+- 过滤器在验签之外还做两件事：校验 `userType=USER`（拒绝后台 token）、查 Redis 黑名单
+  `user:token:blacklist:{token}`（登出后主动失效）；命中则静默跳过认证 → 401
 - 当前项目已演进为**前后台双过滤链**：`/api/admin/**` 走管理员链，前台接口继续走用户链；前台用户 token 无法访问后台接口
 - 白名单 `/api/auth/**`、`/api/health`、Swagger 路径匿名可访问，其余接口全部要求认证（`SecurityConfig`）
 - 未认证返回 `401` + `Result.fail(UNAUTHORIZED)`，而非 403
@@ -158,7 +182,10 @@ sequenceDiagram
 1. **`UserDetailsServiceImpl` 不是登录入口**：它只供 Spring Security 每次请求认证时按用户名加载用户。真正的"账号密码校验 + 签发 token"逻辑在 `UserServiceImpl.login`，两条路径独立。
 2. **`UserContext.clear()` 必不可少**：请求结束不清理的话，Tomcat 线程池复用时下一个请求会读到上一个用户的 id。
 3. **前台 token 现在带 `userType=USER`，但仍然不带角色权限**：`UserPrincipal.getAuthorities()` 返回空集合，目前 `@EnableMethodSecurity` 已开启但前台侧尚未引入 RBAC；后台 RBAC 已独立放在 `spring-shop-admin`。
-4. **JWT 无状态 = 无法主动踢人**：禁用用户只是登录时校验 status，已签发的 token 在过期前仍有效。
+4. **JWT 无状态，但已能主动踢人**：靠 Redis 黑名单实现 —— 退出登录会把 token 写进
+   `user:token:blacklist:{token}`（TTL = token 剩余有效期），过滤器每请求校验。
+   **注意盲区**：禁用用户（`status != 1`）只在**登录时**校验，已签发且未登出的 token 在过期前仍然有效；
+   要立刻失效需要「改密/禁用时把该用户所有 token 拉黑」，当前未做（JWT 无 `jti` 索引，无法反查用户维度的 token 集合）。
 5. **校验异常统一被 `GlobalExceptionHandler` 处理**，返回 400 + 第一个字段错误信息，不是 Spring 默认格式。
 
 ## 八、多端支持（客户端标识 + 小程序登录）

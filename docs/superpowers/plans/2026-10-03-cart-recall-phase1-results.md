@@ -24,6 +24,7 @@
 | 仿真工具 | `sql/demo/gen_recall_demo.py` | 复用真实迁移脚本建库，跑**同一份 SQL** |
 
 **验证结果**：`mvn -B clean verify` → BUILD SUCCESS；`spring-shop-stats` 10/10、`spring-shop-web` 59/59。
+（用例数为 **2026-10-03 当时**的统计；2026-10-08 全量已增至 **287 用例**：common 17 / user 17 / admin 28 / product 40 / cart 38 / order 29 / pay 7 / stats 10 / web 101。）
 
 ---
 

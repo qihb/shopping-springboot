@@ -7,6 +7,12 @@
 
 > **状态**：方案评审中，**未落地任何代码**。请先确认第 7 节的 4 个决策点，再进入实现。
 > **需求原文**：每天凌晨 4 点，跑一遍所有用户的购物车数据，做数据分析，排出前 100 的商品。
+>
+> ⛔ **本文档已被取代，勿按此实施**（2026-10-08 核对）：真正的落地版本是
+> `2026-10-02-cart-recall-coupon.md` + `2026-10-03-cart-recall-phase1-results.md`，
+> 对应代码在 `spring-shop-stats`，迁移脚本是 **`V7__cart_recall.sql`**。
+> 本文档里提到的 `V7__cart_hot_rank.sql`、`CartHotRankMapper.xml`、`/api/admin/stats/cart-rank/**`
+> **均不存在**，V7 版本号已被 `cart_recall` 占用。
 
 **Tech Stack（复用现有能力）**：Spring Scheduling（`@EnableScheduling` 已在 `SpringShopApplication` 上）、MyBatis-Plus + XML Mapper、Flyway、StringRedisTemplate、Spring Security 双过滤链 + RBAC。
 
