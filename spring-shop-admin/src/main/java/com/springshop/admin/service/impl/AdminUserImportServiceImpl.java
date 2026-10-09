@@ -182,7 +182,10 @@ public class AdminUserImportServiceImpl implements AdminUserImportService {
         private void run() {
             ExcelReadOptions options = ExcelReadOptions.defaults()
                     .fileType(ExcelFileType.fromFileName(context.getFileName()))
-                    .maxRows(excelTaskProperties.getMaxImportRows());
+                    .maxRows(excelTaskProperties.getMaxImportRows())
+                    // 声明模板表头：业务侧是按列下标取值的，用户删列/挪列会让取值整体错位，
+                    // 而错位后的值往往仍能通过类型与范围校验，最终「把数据导成另一个字段」且任务报成功
+                    .expectedHeaders(HEADERS);
             try (InputStream in = context.openSource()) {
                 ExcelSupport.streamRead(in, options, this::accept);
             } catch (ExcelReadException e) {

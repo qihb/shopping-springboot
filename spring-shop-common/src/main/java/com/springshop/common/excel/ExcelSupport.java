@@ -6,9 +6,11 @@ import org.apache.fesod.sheet.context.AnalysisContext;
 import org.apache.fesod.sheet.enums.ReadDefaultReturnEnum;
 import org.apache.fesod.sheet.exception.ExcelAnalysisException;
 import org.apache.fesod.sheet.exception.ExcelGenerateException;
+import org.apache.fesod.sheet.metadata.data.ReadCellData;
 import org.apache.fesod.sheet.read.builder.ExcelReaderBuilder;
 import org.apache.fesod.sheet.read.listener.ReadListener;
 import org.apache.fesod.sheet.support.ExcelTypeEnum;
+import org.apache.fesod.sheet.util.ConverterUtils;
 import org.apache.fesod.sheet.write.metadata.WriteSheet;
 import org.apache.fesod.sheet.write.style.column.LongestMatchColumnWidthStyleStrategy;
 
@@ -26,7 +28,12 @@ import java.util.function.Consumer;
  * Excel 读写通用工具（基于 Apache Fesod）
  *
  * <p>只负责「字节流 ↔ 字符串表格」的转换，不感知任何业务语义：
- * 表头是否正确、字段是否必填、数值是否越界等校验全部由各业务模块自己完成。
+ * 字段是否必填、数值是否越界等校验全部由各业务模块自己完成。
+ *
+ * <p>唯一的例外是<b>表头比对</b>：它本身不含业务语义（调用方把模板表头传进来即可），
+ * 但它是所有「按列下标取值」的导入功能的前置条件——表头一旦对不上，
+ * 取值就会整体错位，而后面的类型与范围校验往往照样通过，错误无声无息。
+ * 所以把它做进这一层，由 {@link ExcelReadOptions#expectedHeaders} 显式开启。
  *
  * <p><b>为什么从 POI 换成 Fesod</b>：POI 的 {@code WorkbookFactory.create} 会把整个工作簿
  * 解析成 DOM 树驻留堆内存，一万行的 xlsx 轻松吃掉几百 MB，导入上限只能卡在千行级。
@@ -56,10 +63,11 @@ public final class ExcelSupport {
      * 不需要把整个文件读进内存。
      *
      * @param in          文件输入流，由调用方负责关闭
-     * @param options     读取参数（sheet 序号、表头行数、行数上限、列数上限）
+     * @param options     读取参数（sheet 序号、表头行数、行数上限、列数上限、
+     *                    以及可选的模板表头 {@link ExcelReadOptions#expectedHeaders}）
      * @param rowConsumer 行回调，{@code rowNum} 与用户在 Excel 中看到的行号一致
      * @return 实际读到的数据行数（已跳过空行）
-     * @throws ExcelReadException 文件不可解析、无数据行或行数超限
+     * @throws ExcelReadException 文件不可解析、无数据行、行数超限，或表头与模板不一致
      */
     public static int streamRead(InputStream in, ExcelReadOptions options, Consumer<ExcelRow> rowConsumer)
             throws ExcelReadException {
@@ -172,6 +180,10 @@ public final class ExcelSupport {
         if (limit != null) {
             return new ExcelReadException(limit.getMessage());
         }
+        HeaderMismatchException headerMismatch = findCause(e, HeaderMismatchException.class);
+        if (headerMismatch != null) {
+            return new ExcelReadException(headerMismatch.getMessage());
+        }
         ExcelReadException readException = findCause(e, ExcelReadException.class);
         if (readException != null) {
             return readException;
@@ -231,13 +243,48 @@ public final class ExcelSupport {
 
         private int rowCount;
 
+        /**
+         * 表头是否已经校验过（或确认无需校验）
+         *
+         * <p>用来兜住「第 1 行被整行删掉」的情况：整行空白会被 Fesod 当空行丢弃，
+         * 于是 {@code invokeHead} 根本不会被回调，表头校验就被静默跳过。
+         * 有这个标记，第一条数据到来时就能发现「表头从没出现过」并当场报错。
+         */
+        private boolean headChecked;
+
         private RowCollectingListener(ExcelReadOptions options, Consumer<ExcelRow> rowConsumer) {
             this.options = options;
             this.rowConsumer = rowConsumer;
+            this.headChecked = !needsHeadValidation();
+        }
+
+        /**
+         * 表头行回调：逐列比对模板表头
+         *
+         * <p>Fesod 在 {@code headRowNumber > 0} 时把表头行喂到这里（而不是 {@code invoke}），
+         * 所以校验放在这里不改变原有的行遍历流程，也不需要把表头当数据读一遍。
+         */
+        @Override
+        public void invokeHead(Map<Integer, ReadCellData<?>> headMap, AnalysisContext context) {
+            headChecked = true;
+            if (!options.hasExpectedHeaders()) {
+                return;
+            }
+            String mismatch = findHeaderMismatch(options.getExpectedHeaders(),
+                    ConverterUtils.convertToStringMap(headMap, context));
+            if (mismatch != null) {
+                throw new HeaderMismatchException(mismatch);
+            }
         }
 
         @Override
         public void invoke(Map<Integer, String> data, AnalysisContext context) {
+            // 声明了模板表头却一条表头都没见到：第 1 行是空的（表头被删了）。
+            // 这时绝不能继续按列下标取值——那会把第一条数据当成正常数据导入，且毫无报错信号
+            if (!headChecked) {
+                throw new HeaderMismatchException(
+                        "文件第 1 行没有表头，无法确认各列含义。请重新下载模板，表头保持在第 1 行");
+            }
             List<String> cells = toCells(data);
             if (isBlank(cells)) {
                 return;
@@ -252,6 +299,48 @@ public final class ExcelSupport {
             rowConsumer.accept(new ExcelRow(context.readRowHolder().getRowIndex() + 1, cells));
         }
 
+        /**
+         * 是否需要校验表头
+         *
+         * <p>{@code headRowNumber = 0} 时根本没有表头行（调用方把表头当数据读，
+         * 如回读导出结果验证表头），此时声明 expectedHeaders 是无意义的组合，不做校验。
+         */
+        private boolean needsHeadValidation() {
+            return options.hasExpectedHeaders() && options.getHeadRowNumber() > 0;
+        }
+
+        /**
+         * 逐列比对表头，返回<b>第一处</b>不一致的可读描述；完全一致返回 null
+         *
+         * <p>只比对模板声明的那几列，允许文件在末尾多出额外的列——多出来的列不影响
+         * 按下标取值，为此拒绝用户「顺手加了备注列」的文件没有意义。但少列、错位、
+         * 改名都会被抓出来。
+         */
+        private String findHeaderMismatch(List<String> expected, Map<Integer, String> actual) {
+            for (int i = 0; i < expected.size(); i++) {
+                String want = normalizeHeader(expected.get(i));
+                String got = normalizeHeader(actual.get(i));
+                if (!want.equals(got)) {
+                    return describeHeaderMismatch(i, want, got);
+                }
+            }
+            return null;
+        }
+
+        private String normalizeHeader(String text) {
+            return text == null ? "" : text.trim();
+        }
+
+        private String describeHeaderMismatch(int index, String expected, String actual) {
+            String prefix = "表头与模板不一致：第 " + (index + 1) + " 列应当是「" + expected + "」，";
+            String suffix = "。请重新下载模板，不要删除列或调整列顺序";
+            if (actual.isEmpty()) {
+                // 最危险的一种：用户删掉了一列，后面所有列都会左移，取值全部串位
+                return prefix + "实际为空（该列被删掉了，后面的列会整体左移）" + suffix;
+            }
+            return prefix + "实际是「" + actual + "」" + suffix;
+        }
+
         @Override
         public void doAfterAllAnalysed(AnalysisContext context) {
             // 无需收尾动作：调用方通过返回值拿到行数
@@ -259,7 +348,7 @@ public final class ExcelSupport {
 
         @Override
         public void onException(Exception exception, AnalysisContext context) {
-            // 默认实现会吞掉异常，这里必须重新抛出，否则「行数超限」「格式非法」都会被静默忽略
+            // 默认实现会吞掉异常，这里必须重新抛出，否则「行数超限」「表头不符」「格式非法」都会被静默忽略
             if (exception instanceof RuntimeException runtimeException) {
                 throw runtimeException;
             }
@@ -305,6 +394,21 @@ public final class ExcelSupport {
     private static final class RowLimitException extends RuntimeException {
 
         private RowLimitException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * 表头不匹配的内部信号
+     *
+     * <p>与 {@link RowLimitException} 同理：{@link ExcelReadException} 是受检的
+     * {@link IOException}，而表头回调里抛不出受检异常，只能用一个运行时异常把可读消息
+     * 穿过 Fesod 的异常包装带回 {@link #streamRead}，再由 {@link #toReadException} 转成
+     * {@link ExcelReadException}。
+     */
+    private static final class HeaderMismatchException extends RuntimeException {
+
+        private HeaderMismatchException(String message) {
             super(message);
         }
     }

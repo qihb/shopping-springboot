@@ -1,5 +1,7 @@
 package com.springshop.common.excel;
 
+import java.util.List;
+
 /**
  * Excel 读取参数
  *
@@ -25,6 +27,14 @@ public class ExcelReadOptions {
 
     /** 文件类型：显式指定可避免 Fesod 探测失败后退化成 CSV 解析（详见 {@link ExcelFileType}） */
     private ExcelFileType fileType;
+
+    /**
+     * 期望的表头（模板表头，按列顺序）
+     *
+     * <p>为空表示不做表头校验（导出结果的回读、通用表格解析等场景）。
+     * 非空时按列逐字比对，不一致直接失败——见 {@link #expectedHeaders(List)}。
+     */
+    private List<String> expectedHeaders;
 
     public static ExcelReadOptions defaults() {
         return new ExcelReadOptions();
@@ -85,5 +95,44 @@ public class ExcelReadOptions {
     public ExcelReadOptions fileTypeFromName(String fileName) {
         this.fileType = ExcelFileType.fromFileName(fileName);
         return this;
+    }
+
+    public List<String> getExpectedHeaders() {
+        return expectedHeaders;
+    }
+
+    /**
+     * 声明模板表头，读取时逐列比对，不一致立即失败
+     *
+     * <p><b>为什么必须校验表头</b>：业务侧是按「列下标」取值的
+     * （{@code row.cell(COL_PRICE)} 之类）。只要用户删掉或挪动了一列，
+     * 下标与语义的对应关系就整体错位，而后面的取值、类型转换、范围校验
+     * <b>全都能正常通过</b>——最终把「销售价」写进了「规格」、「库存」写进了「状态」，
+     * 任务还报「成功」。这类事故没有任何报错信号，只能靠表头这道闸拦住。
+     *
+     * <p>比对规则（刻意从严）：
+     * <ul>
+     *   <li>按列下标逐字比对（去掉首尾空白），<b>少列、错位、改名都会被拒绝</b>；</li>
+     *   <li>允许文件在模板最后一列之后多出额外的列：多出来的列不影响按下标取值，
+     *       为此拒绝用户「顺手加了备注列」的文件没有意义；</li>
+     *   <li>第 1 行为空（表头被整行删掉）同样拒绝，不会退化成「把第一条数据当表头」。</li>
+     * </ul>
+     *
+     * <p>失败提示会指出<b>第一处</b>不一致的列号、期望值与实际值，
+     * 让运营能自己定位，而不是丢一句「文件格式不对」。
+     *
+     * @param expectedHeaders 模板表头，顺序必须与业务侧取值的列下标一致；
+     *                        传 {@code null} 或空列表表示不做校验
+     */
+    public ExcelReadOptions expectedHeaders(List<String> expectedHeaders) {
+        this.expectedHeaders = expectedHeaders;
+        return this;
+    }
+
+    /**
+     * 是否声明了模板表头（即是否需要做表头校验）
+     */
+    public boolean hasExpectedHeaders() {
+        return expectedHeaders != null && !expectedHeaders.isEmpty();
     }
 }

@@ -28,6 +28,21 @@ class ExcelSupportTest {
         return ExcelReadOptions.defaults().fileType(ExcelFileType.XLSX);
     }
 
+    /**
+     * 模拟一份商品导入模板的表头
+     *
+     * <p>刻意包含「规格」这种位于中间的列：删掉它会让它后面所有列整体左移，
+     * 是表头校验要拦住的最典型事故。
+     */
+    private static final List<String> TEMPLATE_HEADERS = List.of(
+            "商品名称*", "副标题", "主图URL", "分类名称*", "SKU编码*", "规格",
+            "销售价*", "原价", "库存", "状态(1上架/0下架)");
+
+    /** 用指定表头 + 单行数据生成一个 xlsx，用于验证表头校验 */
+    private static byte[] sheetWith(List<String> headers, List<String> row) throws IOException {
+        return ExcelSupport.writeDynamic("模板", headers, List.of(row));
+    }
+
     @Test
     @DisplayName("动态表头：写出的模板能原样读回，行号从 2 开始且跳过空行")
     void dynamicWriteThenRead() throws IOException {
@@ -100,6 +115,111 @@ class ExcelSupportTest {
         assertThatThrownBy(() -> ExcelSupport.readAll(new ByteArrayInputStream(bytes), xlsxOptions()))
                 .isInstanceOf(ExcelReadException.class)
                 .hasMessageContaining("没有可导入的数据行");
+    }
+
+    // ---------------- 表头校验 ----------------
+    //
+    // 这一组是「按列下标取值」的前置条件：表头一旦对不上，取值就整体错位，
+    // 而错位后的值往往照样能通过类型与范围校验，最终把数据写进另一个字段且任务报「成功」。
+    // 所以这里既要有「一致就放行」，也要有「删列 / 改名 / 没表头都必须拒绝」。
+
+    @Test
+    @DisplayName("表头校验：与模板一致时正常读取")
+    void headerMatches_shouldReadNormally() throws IOException {
+        byte[] bytes = sheetWith(TEMPLATE_HEADERS, List.of(
+                "商品A", "副标题", "https://example.com/a.jpg", "手机", "SKU-1", "颜色:黑",
+                "199.00", "299.00", "10", "1"));
+
+        List<ExcelRow> rows = ExcelSupport.readAll(new ByteArrayInputStream(bytes),
+                xlsxOptions().expectedHeaders(TEMPLATE_HEADERS));
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).cell(4)).isEqualTo("SKU-1");
+    }
+
+    @Test
+    @DisplayName("表头校验：删掉中间一列必须当场失败，并指出是哪一列开始错位")
+    void deletedColumn_shouldFailWithExactPosition() throws IOException {
+        List<String> tampered = new ArrayList<>(TEMPLATE_HEADERS);
+        tampered.remove(5); // 删掉「规格」
+
+        byte[] bytes = sheetWith(tampered, List.of("商品A"));
+
+        assertThatThrownBy(() -> ExcelSupport.readAll(new ByteArrayInputStream(bytes),
+                xlsxOptions().expectedHeaders(TEMPLATE_HEADERS)))
+                .isInstanceOf(ExcelReadException.class)
+                .hasMessageContaining("第 6 列")
+                .hasMessageContaining("规格")
+                .hasMessageContaining("销售价*");
+    }
+
+    @Test
+    @DisplayName("表头校验：删掉最后一列也要拒绝（该列有默认值，静默生效比报错更危险）")
+    void missingTrailingColumn_shouldFail() throws IOException {
+        List<String> tampered = new ArrayList<>(TEMPLATE_HEADERS);
+        tampered.remove(TEMPLATE_HEADERS.size() - 1); // 删掉「状态(1上架/0下架)」
+
+        byte[] bytes = sheetWith(tampered, List.of("商品A"));
+
+        assertThatThrownBy(() -> ExcelSupport.readAll(new ByteArrayInputStream(bytes),
+                xlsxOptions().expectedHeaders(TEMPLATE_HEADERS)))
+                .isInstanceOf(ExcelReadException.class)
+                .hasMessageContaining("第 10 列")
+                .hasMessageContaining("状态");
+    }
+
+    @Test
+    @DisplayName("表头校验：改了列名同样失败")
+    void renamedColumn_shouldFail() throws IOException {
+        List<String> tampered = new ArrayList<>(TEMPLATE_HEADERS);
+        tampered.set(1, "副标题(选填)");
+
+        byte[] bytes = sheetWith(tampered, List.of("商品A"));
+
+        assertThatThrownBy(() -> ExcelSupport.readAll(new ByteArrayInputStream(bytes),
+                xlsxOptions().expectedHeaders(TEMPLATE_HEADERS)))
+                .isInstanceOf(ExcelReadException.class)
+                .hasMessageContaining("第 2 列")
+                .hasMessageContaining("副标题");
+    }
+
+    @Test
+    @DisplayName("表头校验：末尾多出额外的列不影响按下标取值，放行")
+    void extraTrailingColumn_shouldStillRead() throws IOException {
+        List<String> withExtra = new ArrayList<>(TEMPLATE_HEADERS);
+        withExtra.add("备注");
+
+        byte[] bytes = sheetWith(withExtra, List.of("商品A"));
+
+        List<ExcelRow> rows = ExcelSupport.readAll(new ByteArrayInputStream(bytes),
+                xlsxOptions().expectedHeaders(TEMPLATE_HEADERS));
+
+        assertThat(rows).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("表头校验：第 1 行没有表头时拒绝，而不是把第一条数据当普通数据导进去")
+    void blankHeaderRow_shouldFail() throws IOException {
+        byte[] bytes = sheetWith(List.of("", "", ""), List.of("商品A", "副标题", "https://example.com/a.jpg"));
+
+        // 空表头行可能被 Fesod 当空行丢掉（走「第 1 行没有表头」这条分支），
+        // 也可能以「全空单元格」的形式回调到表头校验（走「第 1 列实际为空」这条分支）。
+        // 两条路径的提示不同，但都必须以「表头」为关键词明确拒绝。
+        assertThatThrownBy(() -> ExcelSupport.readAll(new ByteArrayInputStream(bytes),
+                xlsxOptions().expectedHeaders(TEMPLATE_HEADERS)))
+                .isInstanceOf(ExcelReadException.class)
+                .hasMessageContaining("表头");
+    }
+
+    @Test
+    @DisplayName("未声明模板表头时不做校验：回读导出结果等场景必须保持原行为")
+    void withoutExpectedHeaders_shouldNotValidate() throws IOException {
+        byte[] bytes = sheetWith(List.of("任意表头", "第二列"), List.of("A", "B"));
+
+        List<ExcelRow> rows = ExcelSupport.readAll(new ByteArrayInputStream(bytes), xlsxOptions());
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).cell(0)).isEqualTo("A");
     }
 
     @Test
