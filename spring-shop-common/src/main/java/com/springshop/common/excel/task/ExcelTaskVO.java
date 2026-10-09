@@ -61,6 +61,30 @@ public class ExcelTaskVO {
     @Schema(description = "失败原因，成功时为 null")
     private String errorMsg;
 
+    /**
+     * 实际落库的失败明细条数
+     *
+     * <p>失败明细有上限（{@code excel.task.max-error-rows}），超过后只累加
+     * {@code failRows} 而不再落库。所以「失败行数」与「能下载到的明细条数」
+     * 可能不相等——前端要能同时看到这两个数。
+     *
+     * <p><b>只有任务详情接口会填这两个字段</b>，任务列表返回 {@code null}
+     * （含义是「未计算」，而不是「0 条」）：列表里逐条任务都去 count 一次明细
+     * 就是 N 次查询，而列表页并不需要这个数。
+     */
+    @Schema(description = "实际记录下来的失败明细条数；任务列表不返回（null）")
+    private Integer detailRows;
+
+    /**
+     * 未记录的失败明细条数 = {@code failRows - detailRows}
+     *
+     * <p>大于 0 就表示失败明细被截断了：下载到的明细文件是不完整的，
+     * 不能拿它当「全部失败原因」来对账。没有这个字段时，用户只能看到
+     * 「失败 12345 行」和一个只有 10000 行的文件，且没有任何提示。
+     */
+    @Schema(description = "未记录下来的失败明细条数；大于 0 表示明细被截断；任务列表不返回（null）")
+    private Integer unrecordedErrorRows;
+
     @Schema(description = "开始时间")
     private LocalDateTime startTime;
 
@@ -103,6 +127,10 @@ public class ExcelTaskVO {
     public void setDownloadable(boolean downloadable) { this.downloadable = downloadable; }
     public String getErrorMsg() { return errorMsg; }
     public void setErrorMsg(String errorMsg) { this.errorMsg = errorMsg; }
+    public Integer getDetailRows() { return detailRows; }
+    public void setDetailRows(Integer detailRows) { this.detailRows = detailRows; }
+    public Integer getUnrecordedErrorRows() { return unrecordedErrorRows; }
+    public void setUnrecordedErrorRows(Integer unrecordedErrorRows) { this.unrecordedErrorRows = unrecordedErrorRows; }
     public LocalDateTime getStartTime() { return startTime; }
     public void setStartTime(LocalDateTime startTime) { this.startTime = startTime; }
     public LocalDateTime getEndTime() { return endTime; }

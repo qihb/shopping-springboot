@@ -70,16 +70,48 @@ public interface ExcelTaskService {
      */
     ExcelTaskVO toVO(ExcelTask task);
 
-    void markRunning(String taskNo);
+    /**
+     * 把任务从「待执行」推进到「执行中」（CAS）
+     *
+     * <p>带 {@code status = 0} 前置条件。影响 0 行说明任务已被别人处理过
+     * （典型场景：清理任务已把它判为失败），<b>调用方必须放弃执行</b>——
+     * 继续跑只会产生一份没人认领的结果。
+     *
+     * @return 影响行数，1 表示抢到，0 表示没抢到
+     */
+    int markRunning(String taskNo);
 
     /**
      * 回写执行进度（导入按批上报，导出按页上报）
+     *
+     * <p>只对「执行中」的任务生效。否则会给已经被判失败的任务继续回写进度，
+     * 任务详情里就会出现「状态=失败，但成功 8000 行」这种自相矛盾的展示。
+     *
+     * @return 影响行数
      */
-    void updateProgress(String taskNo, int processedRows, int successRows, int failRows);
+    int updateProgress(String taskNo, int processedRows, int successRows, int failRows);
 
-    void markSuccess(String taskNo, int processedRows, int successRows, int failRows);
+    /**
+     * 写成功终态（CAS，只对「执行中」的任务生效）
+     *
+     * <p>带 {@code status = 1} 前置条件。任务若已被清理任务判为失败，这里命中 0 行、
+     * 不会把状态改回成功——否则用户会先被提示「任务中断，请重新提交」，
+     * 重新提交之后原任务又变成「成功」，同一批数据进两遍。
+     *
+     * @return 影响行数，0 表示任务已是终态、本次写入被拒绝
+     */
+    int markSuccess(String taskNo, int processedRows, int successRows, int failRows);
 
-    void markFailed(String taskNo, String errorMsg);
+    /**
+     * 写失败终态（CAS，允许覆盖「待执行」与「执行中」）
+     *
+     * <p>之所以允许 {@code status = 0}：受理阶段落盘失败、线程池队列已满这两条路径
+     * 都是在任务还没开始跑的时候写失败。但必须排除两个终态，
+     * 否则会把清理任务写好的失败原因覆盖掉。
+     *
+     * @return 影响行数
+     */
+    int markFailed(String taskNo, String errorMsg);
 
     /**
      * 回写导出结果文件路径

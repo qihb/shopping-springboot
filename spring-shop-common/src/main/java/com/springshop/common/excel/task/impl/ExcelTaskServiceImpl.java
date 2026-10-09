@@ -144,31 +144,58 @@ public class ExcelTaskServiceImpl implements ExcelTaskService {
 
     @Override
     public ExcelTaskVO detail(String taskNo, Long adminId) {
-        return toVO(getOwnedTask(taskNo, adminId));
+        ExcelTask task = getOwnedTask(taskNo, adminId);
+        ExcelTaskVO vo = toVO(task);
+        // 失败明细有上限（excel.task.max-error-rows），超过后只累加 failRows 而不再落库。
+        // 用户拿到的明细文件因此可能是不完整的，必须在详情里把「少记了多少条」讲清楚，
+        // 否则他只能看到一个 10000 行的文件和一个「失败 12345 行」的计数，无从判断该不该信这份明细。
+        int failRows = task.getFailRows() == null ? 0 : task.getFailRows();
+        // 只有确实有失败行才查库：导出任务与零失败的导入任务都是 0，这一次查询直接省掉。
+        // 注意这件事只能放在详情里做 —— 任务列表逐条查会变成 N 次查询（见 toVO 的注释）
+        long detailRows = failRows > 0 ? countErrors(taskNo) : 0L;
+        vo.setDetailRows((int) detailRows);
+        vo.setUnrecordedErrorRows((int) Math.max(0, failRows - detailRows));
+        return vo;
     }
 
+    /**
+     * 状态流转一律用「带前置条件的 UPDATE」（CAS），不做无条件覆盖
+     *
+     * <p>背景：清理任务 {@code failStaleTasks} 会把创建超过 24 小时仍未结束的任务
+     * 判为失败。如果那个任务的线程其实还活着（导入十万行、数据库慢、或者在线程池
+     * 队列里排了很久），它跑完后若无条件 UPDATE，就会把状态从「失败」改回「成功」。
+     * 用户先被提示「请重新提交」、重新提交之后原任务又变成成功 ——
+     * 而导入是纯新增，结果是同一批数据进了两遍。
+     *
+     * <p>所以每个写方法都必须声明「允许从哪个状态出发」，并返回影响行数让调用方
+     * 知道这次写入到底生效了没有。
+     */
     @Override
     @Transactional(rollbackFor = Exception.class, propagation = Propagation.REQUIRES_NEW)
-    public void markRunning(String taskNo) {
+    public int markRunning(String taskNo) {
         ExcelTask update = new ExcelTask();
         update.setStatus(ExcelTaskStatus.RUNNING.getCode());
         update.setStartTime(LocalDateTime.now());
-        excelTaskMapper.update(update, Wrappers.<ExcelTask>lambdaUpdate().eq(ExcelTask::getTaskNo, taskNo));
+        return excelTaskMapper.update(update, Wrappers.<ExcelTask>lambdaUpdate()
+                .eq(ExcelTask::getTaskNo, taskNo)
+                .eq(ExcelTask::getStatus, ExcelTaskStatus.PENDING.getCode()));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class, propagation = Propagation.REQUIRES_NEW)
-    public void updateProgress(String taskNo, int processedRows, int successRows, int failRows) {
+    public int updateProgress(String taskNo, int processedRows, int successRows, int failRows) {
         ExcelTask update = new ExcelTask();
         update.setProcessedRows(processedRows);
         update.setSuccessRows(successRows);
         update.setFailRows(failRows);
-        excelTaskMapper.update(update, Wrappers.<ExcelTask>lambdaUpdate().eq(ExcelTask::getTaskNo, taskNo));
+        return excelTaskMapper.update(update, Wrappers.<ExcelTask>lambdaUpdate()
+                .eq(ExcelTask::getTaskNo, taskNo)
+                .eq(ExcelTask::getStatus, ExcelTaskStatus.RUNNING.getCode()));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class, propagation = Propagation.REQUIRES_NEW)
-    public void markSuccess(String taskNo, int processedRows, int successRows, int failRows) {
+    public int markSuccess(String taskNo, int processedRows, int successRows, int failRows) {
         ExcelTask update = new ExcelTask();
         update.setStatus(ExcelTaskStatus.SUCCESS.getCode());
         update.setProcessedRows(processedRows);
@@ -176,18 +203,27 @@ public class ExcelTaskServiceImpl implements ExcelTaskService {
         update.setFailRows(failRows);
         update.setTotalRows(processedRows);
         update.setEndTime(LocalDateTime.now());
-        update.setErrorMsg(null);
-        excelTaskMapper.update(update, Wrappers.<ExcelTask>lambdaUpdate().eq(ExcelTask::getTaskNo, taskNo));
+        return excelTaskMapper.update(update, Wrappers.<ExcelTask>lambdaUpdate()
+                .eq(ExcelTask::getTaskNo, taskNo)
+                .eq(ExcelTask::getStatus, ExcelTaskStatus.RUNNING.getCode())
+                // 清空 error_msg 必须走 wrapper.set()：MyBatis-Plus 默认 update-strategy 是
+                // NOT_NULL，实体上的 null 字段会被整段跳过，update.setErrorMsg(null) 是无效的
+                .set(ExcelTask::getErrorMsg, null));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class, propagation = Propagation.REQUIRES_NEW)
-    public void markFailed(String taskNo, String errorMsg) {
+    public int markFailed(String taskNo, String errorMsg) {
         ExcelTask update = new ExcelTask();
         update.setStatus(ExcelTaskStatus.FAILED.getCode());
         update.setErrorMsg(truncate(errorMsg, 900));
         update.setEndTime(LocalDateTime.now());
-        excelTaskMapper.update(update, Wrappers.<ExcelTask>lambdaUpdate().eq(ExcelTask::getTaskNo, taskNo));
+        // 允许 PENDING：受理阶段落盘失败、线程池队列已满都是在任务开跑前写失败；
+        // 但排除两个终态，否则会抹掉清理任务写好的失败原因
+        return excelTaskMapper.update(update, Wrappers.<ExcelTask>lambdaUpdate()
+                .eq(ExcelTask::getTaskNo, taskNo)
+                .in(ExcelTask::getStatus,
+                        ExcelTaskStatus.PENDING.getCode(), ExcelTaskStatus.RUNNING.getCode()));
     }
 
     @Override
@@ -309,6 +345,14 @@ public class ExcelTaskServiceImpl implements ExcelTaskService {
         }
     }
 
+    /**
+     * 实体转 VO
+     *
+     * <p>刻意<b>不</b>查失败明细条数：本方法既服务「受理后直接把 VO 返回给前端」，
+     * 也服务「任务列表逐条转换」——在列表里查明细就是 N 次查询。
+     * 需要明细条数的只有详情接口，见 {@link #detail}。
+     * 所以 {@code detailRows / unrecordedErrorRows} 在这里保持 {@code null}（含义是「未计算」）。
+     */
     @Override
     public ExcelTaskVO toVO(ExcelTask task) {        ExcelTaskVO vo = new ExcelTaskVO();
         vo.setTaskNo(task.getTaskNo());

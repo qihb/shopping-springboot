@@ -115,6 +115,13 @@ class ExcelTaskIntegrationTest {
         assertEquals(2, task.get("status").asInt(), "行级失败不改变任务成功状态，详情: " + task);
         assertTrue(task.get("downloadable").asBoolean(), "有失败行时应可下载明细");
 
+        // 明细条数与失败行数对得上，说明「明细是否被截断」这两个字段在真实链路上确实被填了。
+        // 明细有上限（excel.task.max-error-rows），一旦超限，用户拿到的文件就是不完整的，
+        // 所以这两个数必须能在详情里读到，而不能只存在于日志里
+        assertEquals(1, task.get("detailRows").asInt(), "明细文件里应当正好有 1 条，详情: " + task);
+        assertEquals(0, task.get("unrecordedErrorRows").asInt(),
+                "失败 1 行、明细 1 条，没有被截断，详情: " + task);
+
         // 失败明细是「按需生成」的视图，不落盘，下载时流式拼出来
         byte[] detail = mockMvc.perform(get("/api/admin/excel-tasks/" + task.get("taskNo").asText() + "/download")
                         .header("Authorization", bearer(token)))
@@ -140,6 +147,43 @@ class ExcelTaskIntegrationTest {
                 .andReturn().getResponse().getContentAsString());
 
         assertEquals(5009, json.get("code").asInt());
+    }
+
+    /**
+     * 表头被改动时必须整体失败，而不是按错位后的列把数据导进去
+     *
+     * <p><b>这条用例是本类里唯一「刻意用错表头」的</b>，它的存在本身就是一次修正：
+     * 以前所有导入用例的表头都是照着服务端常量抄的（{@link #ADMIN_IMPORT_HEADERS}），
+     * 于是「读表时不校验表头、只按下标取值」这个缺陷在 CI 里完全不可见——
+     * 表头永远是对的，串列自然不会发生。
+     *
+     * <p>删掉「角色编码*」这一列后，它后面所有列左移。若不做表头校验，
+     * 「状态」会被当成角色编码、「初始密码」会被当成状态，而这两者恰好都能通过校验
+     * （状态 1 合法、密码留空即用默认密码），任务会以「成功」收场，
+     * 导进去的账号却是错的——没有任何报错信号。
+     */
+    @Test
+    void adminUserImport_withTamperedHeader_shouldFailInsteadOfMisreadingColumns() throws Exception {
+        String token = loginAsAdmin();
+        List<String> tampered = ADMIN_IMPORT_HEADERS.stream()
+                .filter(header -> !header.startsWith("角色编码"))
+                .toList();
+        byte[] content = ExcelSupport.writeDynamic("管理员导入模板", tampered, List.of(
+                List.of("import-shifted-" + RUN_TAG, "错位", "13800000003", "1", "")));
+
+        JsonNode accepted = readJson(mockMvc.perform(multipart("/api/admin/users/import")
+                        .file(new MockMultipartFile("file", "管理员.xlsx", XLSX_CONTENT_TYPE, content))
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).get("data");
+
+        JsonNode task = awaitFinished(token, accepted.get("taskNo").asText());
+
+        assertEquals(3, task.get("status").asInt(),
+                () -> "表头对不上必须整体失败，不能按错位后的列导入，详情: " + task);
+        assertTrue(task.get("errorMsg").asText().contains("表头"),
+                () -> "失败原因要直接点明是表头问题，运营才能自己改，详情: " + task);
+        assertEquals(0, task.get("successRows").asInt(), "一条都不该被导入");
     }
 
     /**

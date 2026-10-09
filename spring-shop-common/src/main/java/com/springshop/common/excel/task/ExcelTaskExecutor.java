@@ -127,18 +127,33 @@ public class ExcelTaskExecutor {
         ExcelTaskContext context = new ExcelTaskContext(task, properties, taskService, fileStorage, objectMapper);
         long startAt = System.currentTimeMillis();
         try {
-            taskService.markRunning(taskNo);
+            // CAS 领取任务。抢不到说明任务已被别人处理过（典型场景：清理任务已把它判为
+            // 失败），这时继续跑只会产出一份没人认领的结果，所以直接放弃
+            if (taskService.markRunning(taskNo) == 0) {
+                log.warn("Excel 任务未能进入「执行中」（状态已被变更），放弃执行 taskNo={} bizType={}",
+                        taskNo, task.getBizType());
+                return;
+            }
             worker.run(context);
             context.flush();
-            taskService.markSuccess(taskNo, context.getProcessedRows(),
-                    context.getSuccessRows(), context.getFailRows());
+            if (taskService.markSuccess(taskNo, context.getProcessedRows(),
+                    context.getSuccessRows(), context.getFailRows()) == 0) {
+                // 业务数据已经落库，但任务记录已是终态（多半是跑超 24 小时被清理任务判失败）。
+                // 不能强行改回成功，只能留一条日志让人工知道「这批数据其实进来了」
+                log.warn("Excel 任务已完成但终态写入被拒绝（任务已被判为终态），"
+                                + "业务数据可能已落库，请人工核对 taskNo={} bizType={} 处理 {} 行",
+                        taskNo, task.getBizType(), context.getProcessedRows());
+                return;
+            }
             log.info("Excel 任务完成 taskNo={} bizType={} 处理 {} 行 / 成功 {} / 失败 {}，耗时 {} ms",
                     taskNo, task.getBizType(), context.getProcessedRows(), context.getSuccessRows(),
                     context.getFailRows(), System.currentTimeMillis() - startAt);
         } catch (Exception e) {
             log.error("Excel 任务执行失败 taskNo={} bizType={}", taskNo, task.getBizType(), e);
             context.flushQuietly();
-            taskService.markFailed(taskNo, readableMessage(e));
+            if (taskService.markFailed(taskNo, readableMessage(e)) == 0) {
+                log.warn("Excel 任务失败终态写入被拒绝（任务已是终态，保留原有失败原因）taskNo={}", taskNo);
+            }
         }
     }
 
