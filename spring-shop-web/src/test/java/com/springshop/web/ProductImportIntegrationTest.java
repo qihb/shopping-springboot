@@ -163,6 +163,41 @@ class ProductImportIntegrationTest {
         assertEquals(1, task.get("failRows").asInt());
     }
 
+    /**
+     * 「同名 + 换一批 SKU 编码」重传：{@code product.name} 上没有唯一索引，原本会静默建出
+     * 第二个同名 SPU（运营在列表里看到两个一模一样的商品，事后无法合并）。
+     * 现在必须整组拒绝，并且库里仍然只有一个同名商品。
+     */
+    @Test
+    void reimportSameProductNameWithNewSkuCode_shouldBeRejectedInsteadOfCreatingSecondSpu() throws Exception {
+        String token = loginAsAdmin();
+        ensureCategory(token);
+        String productName = "重传商品-" + RUN_TAG;
+        runImport(token, List.of(importRow(productName, "SKU-REIMP-1-" + RUN_TAG, "50.00", "3")));
+
+        // SKU 编码是全新的，编码查重拦不住它——只有商品名查重能拦住
+        JsonNode task = runImport(token, List.of(
+                importRow(productName, "SKU-REIMP-2-" + RUN_TAG, "60.00", "3")));
+
+        assertEquals(0, task.get("successRows").asInt(), "同名商品必须整组拒绝，详情: " + task);
+        assertEquals(1, task.get("failRows").asInt(), "详情: " + task);
+
+        // 提示要能让运营知道下一步做什么，而不是只给一句「导入失败」
+        List<ExcelRow> errors = readErrorDetail(token, task.get("taskNo").asText());
+        assertEquals(1, errors.size());
+        String reason = errors.get(0).cell(1);
+        assertTrue(reason.contains(productName), "实际: " + reason);
+        assertTrue(reason.contains("已存在"), "实际: " + reason);
+
+        // 最关键的断言：库里只有一个同名商品，而不是「报了错却又建出来一个」
+        JsonNode records = readJson(mockMvc.perform(get("/api/admin/products")
+                        .param("keyword", productName)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).get("data").get("records");
+        assertEquals(1, records.size(), () -> "同名商品不应被建出第二个，实际返回: " + records);
+    }
+
     @Test
     void importProducts_withNonExcelFile_shouldReturnFileInvalid() throws Exception {
         String token = loginAsAdmin();
@@ -215,6 +250,20 @@ class ProductImportIntegrationTest {
 
         assertTrue(accepted.get("taskNo").asText().startsWith("I"), "导入任务号应以 I 开头");
         return awaitFinished(token, accepted.get("taskNo").asText());
+    }
+
+    /**
+     * 下载失败明细并解析为数据行
+     *
+     * <p>明细是「按需生成、不落盘」的视图，所以这里走的是一条真实的下载链路，
+     * 而不是直接查 {@code excel_task_error} 表。
+     */
+    private List<ExcelRow> readErrorDetail(String token, String taskNo) throws Exception {
+        byte[] detail = mockMvc.perform(get("/api/admin/excel-tasks/" + taskNo + "/download")
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        return ExcelSupport.readAll(new ByteArrayInputStream(detail), ExcelReadOptions.defaults());
     }
 
     /**

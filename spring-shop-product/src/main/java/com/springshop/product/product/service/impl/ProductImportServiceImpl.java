@@ -43,8 +43,18 @@ import java.util.stream.Collectors;
  * <p><b>模板结构</b>：一行一个 SKU，商品级字段（名称 / 副标题 / 主图 / 分类）在同一个商品的
  * 多行里重复填写；解析时按「商品名称」聚合，同名多行合并为一个 SPU + 多个 SKU。
  *
- * <p><b>校验顺序</b>：先做组级校验（商品名、分类），再做行级校验（SKU 字段）。
+ * <p><b>校验顺序</b>：先做组级校验（商品名是否已存在、分类），再做行级校验（SKU 字段）。
  * 组级失败会让该商品的所有行一起失败——因为缺少分类的商品没有任何一行能落库。
+ *
+ * <p><b>重名商品严格拒绝</b>：{@code product.name} 上<b>没有唯一索引</b>，所以「同名 + 换一批
+ * SKU 编码」这种重传会静默地建出第二个同名 SPU，运营在商品列表里看到两个一模一样的商品，
+ * 而订单、购物车、统计各自挂在其中一个上，事后无法合并。因此导入对已存在的商品名一律拒绝，
+ * <b>不覆盖、不新增</b>，并把「该改哪里」写进提示。
+ *
+ * <p>这是应用层的兜底校验，不是数据库约束：查重与落库之间仍有极窄的窗口，
+ * 两个导入任务同时导入同一个新商品名时仍可能各建一个 SPU。要真正堵死需要给
+ * {@code product.name} 加唯一索引（会与逻辑删除冲突，且需要先清理历史重名数据），
+ * 属于独立的库表变更，不在这里顺手做。
  *
  * <p><b>为什么执行体不整体包一个事务</b>：上万行的导入如果放在一个事务里，
  * 要么全成功要么全失败，且长事务会长时间持有锁与 undo log。这里改成
@@ -110,12 +120,12 @@ public class ProductImportServiceImpl implements ProductImportService {
     private static final int MAX_PRICE_SCALE = 2;
 
     /**
-     * SKU 编码查重的分片大小
+     * 批量查重的分片大小（SKU 编码查重、商品名称查重共用）
      *
-     * <p>一次性把 10 万个编码塞进 {@code IN (...)} 会超出 MySQL 的
+     * <p>一次性把 10 万个值塞进 {@code IN (...)} 会超出 MySQL 的
      * {@code max_allowed_packet} 与占位符上限，必须分片查。
      */
-    private static final int SKU_CODE_QUERY_CHUNK = 1000;
+    private static final int QUERY_CHUNK = 1000;
 
     private final ProductMapper productMapper;
     private final ProductSkuMapper productSkuMapper;
@@ -165,6 +175,7 @@ public class ProductImportServiceImpl implements ProductImportService {
         List<ExcelRow> rows = readRows(context);
         Map<String, List<ProductCategory>> categoriesByName = loadCategoriesByName();
         Set<String> occupiedSkuCodes = loadOccupiedSkuCodes(rows);
+        Set<String> occupiedProductNames = loadOccupiedProductNames(rows);
 
         // 按名称聚合；名称为空或超长的行在这里就被记为失败，不进入分组
         List<ImportError> groupErrors = new ArrayList<>();
@@ -183,7 +194,7 @@ public class ProductImportServiceImpl implements ProductImportService {
         for (Map.Entry<String, List<ExcelRow>> entry : groups.entrySet()) {
             List<ExcelRow> groupRows = entry.getValue();
             ProductGroup group = buildGroup(entry.getKey(), groupRows, categoriesByName,
-                    occupiedSkuCodes, importedSkuCodes, recorder);
+                    occupiedProductNames, occupiedSkuCodes, importedSkuCodes, recorder);
             recorder.advance(groupRows.size());
             if (group != null) {
                 pending.add(group);
@@ -253,8 +264,16 @@ public class ProductImportServiceImpl implements ProductImportService {
      */
     private ProductGroup buildGroup(String productName, List<ExcelRow> groupRows,
                                     Map<String, List<ProductCategory>> categoriesByName,
-                                    Set<String> occupiedSkuCodes, Set<String> importedSkuCodes,
+                                    Set<String> occupiedProductNames, Set<String> occupiedSkuCodes,
+                                    Set<String> importedSkuCodes,
                                     ImportRecorder recorder) {
+        if (occupiedProductNames.contains(productName)) {
+            // 放在分类校验之前：商品名已存在时这次导入对这一组来说注定是空操作，
+            // 先报「分类不存在」会把用户引到无关的错处去改
+            recorder.groupError(groupRows, "商品名称「" + productName + "」已存在，导入不会覆盖已有商品。"
+                    + "请改用其他名称，或到商品管理中直接编辑该商品");
+            return null;
+        }
         Long categoryId = resolveCategoryId(productName, groupRows, categoriesByName, recorder);
         if (categoryId == null) {
             return null;
@@ -464,7 +483,7 @@ public class ProductImportServiceImpl implements ProductImportService {
      * 批量查询已被占用的 SKU 编码（与唯一索引口径一致，含逻辑删除行）
      *
      * <p>分片查询：一次导入 10 万个编码时，单条 {@code IN (...)} 会超出数据库的
-     * 报文大小与占位符上限，必须按 {@link #SKU_CODE_QUERY_CHUNK} 切片。
+     * 报文大小与占位符上限，必须按 {@link #QUERY_CHUNK} 切片。
      */
     private Set<String> loadOccupiedSkuCodes(List<ExcelRow> rows) {
         Set<String> skuCodes = rows.stream()
@@ -475,10 +494,10 @@ public class ProductImportServiceImpl implements ProductImportService {
             return Set.of();
         }
         Set<String> occupied = new HashSet<>();
-        List<String> chunk = new ArrayList<>(SKU_CODE_QUERY_CHUNK);
+        List<String> chunk = new ArrayList<>(QUERY_CHUNK);
         for (String code : skuCodes) {
             chunk.add(code);
-            if (chunk.size() >= SKU_CODE_QUERY_CHUNK) {
+            if (chunk.size() >= QUERY_CHUNK) {
                 occupied.addAll(productSkuMapper.selectOccupiedSkuCodes(chunk));
                 chunk.clear();
             }
@@ -489,10 +508,41 @@ public class ProductImportServiceImpl implements ProductImportService {
         return occupied;
     }
 
+    /**
+     * 批量查询已存在的商品名称（未删除的），供「同名商品严格拒绝」使用
+     *
+     * <p>分批查而不是每个分组查一次：一万个商品就是一万次往返，是本场景主要的耗时来源。
+     */
+    private Set<String> loadOccupiedProductNames(List<ExcelRow> rows) {
+        Set<String> names = rows.stream()
+                .map(row -> row.cell(COL_PRODUCT_NAME))
+                .filter(name -> !ExcelSupport.isBlankText(name))
+                .collect(Collectors.toSet());
+        if (names.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> occupied = new HashSet<>();
+        List<String> chunk = new ArrayList<>(QUERY_CHUNK);
+        for (String name : names) {
+            chunk.add(name);
+            if (chunk.size() >= QUERY_CHUNK) {
+                occupied.addAll(productMapper.selectOccupiedProductNames(chunk));
+                chunk.clear();
+            }
+        }
+        if (!chunk.isEmpty()) {
+            occupied.addAll(productMapper.selectOccupiedProductNames(chunk));
+        }
+        return occupied;
+    }
+
     private List<ExcelRow> readRows(ExcelTaskContext context) {
         ExcelReadOptions options = ExcelReadOptions.defaults()
                 .fileType(ExcelFileType.fromFileName(context.getFileName()))
-                .maxRows(excelTaskProperties.getMaxImportRows());
+                .maxRows(excelTaskProperties.getMaxImportRows())
+                // 声明模板表头：业务侧是按列下标取值的，用户删列/挪列会让取值整体错位，
+                // 而错位后的值往往仍能通过类型与范围校验，最终「把数据导成另一个字段」且任务报成功
+                .expectedHeaders(HEADERS);
         try (InputStream in = context.openSource()) {
             return ExcelSupport.readAll(in, options);
         } catch (ExcelReadException e) {

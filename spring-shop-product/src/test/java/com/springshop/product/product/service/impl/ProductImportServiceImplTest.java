@@ -43,6 +43,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -235,6 +236,82 @@ class ProductImportServiceImplTest {
         assertEquals(0, context.getSuccessRows());
         assertEquals(1, context.getFailRows());
         assertTrue(errors().get(0).getMessage().contains("已存在"));
+    }
+
+    /**
+     * {@code product.name} 上没有唯一索引，「同名 + 换一批 SKU 编码」的重传会静默建出
+     * 第二个同名 SPU，运营在列表里看到两个一模一样的商品而事后无法合并。
+     * 导入必须严格拒绝，并把「导入不会覆盖」「该去哪里改」写进提示。
+     */
+    @Test
+    void importProducts_should_reject_product_name_that_already_exists() throws IOException {
+        stubCategory();
+        when(productMapper.selectOccupiedProductNames(any())).thenReturn(List.of("手机A"));
+
+        runImport(List.of(
+                row("手机A", "SKU-NEW-001", "199.00", "10"),
+                row("手机A", "SKU-NEW-002", "199.00", "10")));
+
+        assertEquals(0, context.getSuccessRows());
+        assertEquals(2, context.getFailRows(), "整组一起失败，运营才知道这两行属于同一个商品");
+        String message = errors().get(0).getMessage();
+        assertTrue(message.contains("手机A"), "实际: " + message);
+        assertTrue(message.contains("已存在"), "实际: " + message);
+        assertTrue(message.contains("不会覆盖"), "提示要说清导入不覆盖已有商品，实际: " + message);
+        verify(productMapper, never()).insertBatch(any());
+    }
+
+    /**
+     * 重名校验要排在分类校验之前：商品名已存在时这次导入对这一组来说注定是空操作，
+     * 先报「分类不存在」会把运营引到无关的错处去改。
+     */
+    @Test
+    void importProducts_should_report_name_conflict_before_category_conflict() throws IOException {
+        when(productMapper.selectOccupiedProductNames(any())).thenReturn(List.of("手机A"));
+
+        runImport(List.of(rowWithCategory("手机A", "不存在的分类", "SKU-NEW-001", "199.00", "10")));
+
+        String message = errors().get(0).getMessage();
+        assertTrue(message.contains("已存在"), "实际: " + message);
+        assertFalse(message.contains("分类"), "不应把运营引到分类上去改，实际: " + message);
+    }
+
+    /**
+     * 「严格拒绝」是按商品粒度拒绝，不是整份文件作废——其余商品照常导入，
+     * 这样一次重传里只有真正重复的那个商品会红。
+     */
+    @Test
+    void importProducts_should_reject_only_the_duplicate_name_and_keep_the_rest() throws IOException {
+        stubCategory();
+        stubInsertAssignsId();
+        when(productMapper.selectOccupiedProductNames(any())).thenReturn(List.of("手机A"));
+
+        runImport(List.of(
+                row("手机A", "SKU-DUP-1", "199.00", "10"),
+                row("手机B", "SKU-NEW-2", "299.00", "10")));
+
+        assertEquals(1, context.getSuccessRows());
+        assertEquals(1, context.getFailRows());
+        assertTrue(errors().get(0).getMessage().contains("已存在"));
+    }
+
+    /**
+     * 「重名」指的是与库里已有商品重名，<b>不是</b>文件内同名：文件内同名恰恰是
+     * 「一个 SPU 多个 SKU」的正常写法，不能被当成重复拒掉。
+     */
+    @Test
+    void importProducts_should_treat_same_name_rows_inside_file_as_one_product_not_duplicate() throws IOException {
+        stubCategory();
+        stubInsertAssignsId();
+
+        runImport(List.of(
+                row("手机A", "SKU-A-001", "199.00", "10"),
+                row("手机A", "SKU-A-002", "299.00", "20"),
+                row("手机A", "SKU-A-003", "399.00", "30")));
+
+        assertEquals(3, context.getSuccessRows());
+        assertEquals(0, context.getFailRows(), "文件内同名是「一个 SPU 三个 SKU」的正常写法");
+        verify(productMapper).insertBatch(any());
     }
 
     @Test
