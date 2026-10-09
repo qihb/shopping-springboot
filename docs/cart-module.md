@@ -84,10 +84,14 @@ spring-shop-cart/
 ### 6.1 写操作
 
 - **add**：依次校验 数量合法（3002）→ SKU 存在（2011）→ SKU 启用（3004）→ 商品在售（2014）→ 累加后是否超库存（3003）。
-  - `targetQuantity = 本次数量 + 已存在数量`，超 `sku.stock` 即拒绝。
+  - `targetQuantity = 本次数量 + 已存在数量`，超**可售量**即拒绝。
+  - ⚠️ **V9 起库存口径变了**：可售量 = `inventory.stock − inventory.locked_stock`，
+    由 `InventoryService.available(skuId)` 提供，**不读 `product_sku.stock`**
+    （那个迁移期镜像列已由 V10 删除；在 V9~V10 之间读它也会拿到过期值 —— 未付款订单占用的量看不见）。
+    库存行缺失时按 0 处理（fail-closed）。
   - 不存在则 insert（`checked=1`），已存在则累加并置 `checked=1`。
   - **并发兜底**：insert 捕获 `DuplicateKeyException`（唯一键 `uk_user_sku` 冲突）后重查并退化为累加，避免并发加购同一 SKU 冒泡为系统异常。
-- **updateQuantity**：校验数量合法（3002）→ 条目归属（3001）→ SKU 可购买性（2011/3004/2014，与 add 同强度）→ 超库存校验（3003）。
+- **updateQuantity**：校验数量合法（3002）→ 条目归属（3001）→ SKU 可购买性（2011/3004/2014，与 add 同强度）→ 超**可售量**校验（3003，同样走 `InventoryService.available`）。
 - **updateChecked / updateAllChecked**：单条走 `updateById`；全选先查全部条目，`checked=true` 时先过滤掉失效条目再按 id 集合批量 UPDATE（`checked=false` 时不做过滤）。
 - **delete / deleteChecked / clear**：删除前校验归属；批量删除走 `LambdaQueryWrapper` 条件删除（非逻辑删除）。
 

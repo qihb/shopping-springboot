@@ -45,9 +45,31 @@ spring-shop-product/
 
 表：`product_category / product / product_sku / product_image`（定义在 [V2__init_product_schema.sql](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/main/resources/db/migration/V2__init_product_schema.sql)）
 
+> **V9 起新增**（见 [V9__product_model_alignment.sql](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/main/resources/db/migration/V9__product_model_alignment.sql)）：
+> `brand`（+`product.brand_id`）、`product_attribute` / `product_attribute_value` / `sku_spec_value`（规格体系）、
+> **`inventory`（sku_id 唯一）/ `inventory_log`（流水）**。
+>
+> **V10 起删除**（见 [V10__drop_product_sku_stock.sql](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/main/resources/db/migration/V10__drop_product_sku_stock.sql)）：
+> `product_sku.stock` —— V9 留下的迁移期镜像列，业务写入路径全部切到 `inventory` 后已无读者。
+>
+> ⚠️ **V2 与 V9 脚本刻意不动**：它们是已发布脚本，改一个字节就会改 Flyway 校验和，
+> 让所有已经跑到 V9 的库启动即失败。新增库依次走 V2（建列）→ V9（回填）→ V10（删列），
+> 最终结构与老库一致。**DROP 前请在目标库跑一次一致性检查**（脚本头注释里有现成 SQL），
+> 结果必须 0 行，否则说明还有写入路径在改那一列。
+
 - **product_category**：parent_id=0 表示根，sort 越小越靠前；逻辑删除 + 乐观锁 version。
 - **product**（SPU）：价格与库存不落此表，主图、详情、销量、上下架状态 status=1 上架。
-- **product_sku**：价格/库存唯一事实源；`sku_code` 数据库唯一约束 `uk_sku_code`。
+- **product_sku**：**价格的唯一事实源**；`sku_code` 数据库唯一约束 `uk_sku_code`。
+  ⚠️ **库存不在它这里**（V9 起迁到 `inventory`）：`product_sku.stock` 这个迁移期镜像列
+  已由 **V10 删除**，实体上不再有 `stock` 字段。**读库存一律走 `InventoryService`**。
+- **inventory**：单仓，`sku_id` 唯一；`stock` 在库实物量 / `locked_stock` 未付款订单锁定 /
+  **可售 = 两者之差**（派生）。所有增减都是条件更新（0 行 = 条件不满足）。
+  > **详情缓存失效的责任边界（易漏）**：`product:detail:{id}` 里带着每个 SKU 的**可售量**，
+  > 所以凡改变可售量的库存变更都要失效它。现状：
+  > `lock` / `release` 由 `OrderServiceImpl`（create / cancel / systemCancel）失效；
+  > `adjust` 没有调用方兜底，**由 `InventoryServiceImpl` 自己失效**；
+  > `outbound`（支付出库）**不需要** —— `stock` 与 `locked_stock` 同时减 q，可售量恒定不变。
+  > 改动库存写路径时先对照这三条，别漏也别加多余的失效。
 - **product_image**：`sort` 控制详情图集展示顺序。
 
 MVP 关键约束：
@@ -70,6 +92,8 @@ MVP 关键约束：
 2012 PRODUCT_SKU_CODE_DUPLICATE
 2013 PRODUCT_SKU_EMPTY
 2014 PRODUCT_OFF_SHELF
+2015 PRODUCT_IDENTITY_DUPLICATE   # 同名同规格的商品已存在（(名称, 规格) 唯一）
+2016 PRODUCT_NOT_OFF_SHELF        # 商品未下架，不可删除
 2020 PRODUCT_IMPORT_FILE_INVALID
 ```
 
@@ -88,19 +112,55 @@ MVP 关键约束：
 
 ### 5.2 ProductManageService（写服务，事务）
 
-- 接口：`create / update / updateStatus`
+- 接口：`create / update / updateStatus / delete`
 - 事务边界：在 impl 方法上使用 `@Transactional(rollbackFor = Exception.class)`，确保 SPU / SKUs / Images 原子落库。
 
-- create 流程：
-  1) `validateSkusNotEmpty`：skus 空 → 2013
-  2) `validateCategoryExists`：category 不存在 → 2001
-  3) `validateSkuCodesUnique`：先校验请求内 skuCode 不重复，再用 DB 的 `selectCount(...eq(skuCode).ne(productId, id))` 查全表唯一性，冲突 → 2012
-  4) productMapper.insert 拿到 productId（插入前在 MP 里 setId，测试里打桩手动 `p.setId(100L)`）
-  5) 遍历 ProductSkuItem 逐条 `productSkuMapper.insert`（MVP 采取「逐条」+ 增量保存：更新时先 delete 再重插，简单可靠）
-  6) ProductImageItem 同理，未填 sort 时按索引顺序 idx 写入。
+**校验顺序（2026-10-09 起，顺序有讲究，别调换）**：
 
-- update：整体走「先删 SKU/Image，再重新插入」的增量合并策略；更新时 `ne(productId, id)` 跳过自身 SKU。
-- updateStatus：仅更新 product.status，用于上下架（与批量/细化场景后续可再扩展）。
+1) `validateSkusNotEmpty`：skus 空 → 2013
+2) `validateSkuCodesUnique`：请求内 `sku_code` 不重复 + 查库（`ne(productId, id)` 排除自身）→ 2012
+3) `validateIdentitiesUnique`：`(商品名称, 规格)` 唯一性 → **2015**
+4) `validateCategoryExists`：分类不存在 → 2001
+
+> **唯一性校验必须排在分类校验之前**：名称 + 规格已存在时这次提交注定失败，
+> 先报「分类不存在」会把运营引到无关的错处去改。
+>
+> `validateIdentitiesUnique` 拦两类：
+> ① **本次提交内部**规格重复（同一请求里两行规范化后相同）——`validateSkuCodesUnique`
+> 只查 `sku_code`，**拦不住这个**；② **与库中已有记录**重复，查重走
+> `ProductMapper.selectOccupiedProductSpecs`（一次 join 取回「名称 → 已占用规格」），
+> 修改商品时按**商品粒度**排除本商品自己（不是按 SKU id —— 旧实现会重建 id，按 id 排除会失效）。
+> 规格一律过 `SkuSpecNormalizer` 再比。⚠️ 这是**应用层兜底**，不是数据库约束。
+
+**落 SKU：按规范化规格 upsert（2026-10-09 起，替换了原来的「删旧插新」）**
+
+`saveSkus` 现在：查出该商品现有未删除 SKU 并按规范化规格建索引 →
+匹配到就 `updateById`（**保留 `sku_id`**）、匹配不到才 `insert` →
+请求里没有的逻辑删除（前端契约是「提交即全量」）。
+
+> **为什么必须改掉「先逻辑删除全部 SKU 再重新插入」**（旧实现有三个必然故障）：
+> ① 逻辑删除的行仍占着 `uk_sku_code`（该唯一索引**不区分 `is_deleted`**），
+> 紧接着插入同一个编码直接撞唯一键 ⇒ **改商品必 500**；
+> ② 新 SKU 拿到新自增 id，而 `cart_item.sku_id` / `order_item.sku_id` 仍指向旧 SKU ⇒ 脏引用；
+> ③ 库存被当成「新 SKU 的初始值」，前端不传 stock 时静默清零。
+>
+> **stock 的语义按新增/修改区分**：**新增**时 `stock` 为 `null` → 视为 0；
+> **修改**时 `stock` 为 `null` → **保持原值**（`ProductSkuItem.stock` 没有 `@NotNull`，不传是常态）。
+> 修改时若传了且与原值不同，经 `InventoryService.adjust(...)` 同步到 `inventory` 表
+> （**不直接改表**，否则「改了库存必有账」这条不变量失效）；值没变则跳过，不留无意义的调整流水。
+> 注意 `SaveRequest.sku.stock` 因此被解读为**绝对值**。
+
+- create：校验通过后 `productMapper.insert` 拿 productId → `saveSkus(..., isCreate=true)`
+  → `saveImages(..., isCreate=true)`。
+- update：`saveSkus(..., isCreate=false)` / `saveImages(..., isCreate=false)`，
+  最后主动失效详情缓存 `RedisKeys.productDetail(id)`。
+- updateStatus：仅更新 product.status，用于上下架；同样失效详情缓存。
+- **delete（2026-10-09 新增）**：`PRODUCT_NOT_FOUND`（2010）→ 校验 `status = 0`（否则 **2016**）
+  → 连带**逻辑删除**其全部 SKU 与图片（残留 SKU 的 `sku_code` 仍占着全局唯一编码）
+  → 逻辑删除商品 → 失效详情缓存。
+  > 删除被移除的 SKU / 整个商品前**不检查购物车引用**（2026-10-09 决策）：
+  > `cart_item` 引用已删 SKU 时购物车会标记为「商品已失效」，这个状态前台本来就要处理；
+  > 加拦截反而会让运营「只想改价」时被卡住，且没有强制通道。
 
 ### 5.3 ProductQueryService（读服务，聚合）
 
@@ -139,7 +199,29 @@ product 模块本身**不直接引 Fesod / POI**。
 商品名称* | 副标题 | 主图URL | 分类名称* | SKU编码* | 规格 | 销售价* | 原价 | 库存 | 状态(1上架/0下架)
 ```
 
-**校验分两级**，顺序不能颠倒：
+**唯一性：按 `(商品名称, 规格)` 逐行判定（2026-10-09 起，替换了原来的「按名称整组拒绝」）**：
+
+| 情形 | 行为 |
+|---|---|
+| 名称在库里不存在 | 新建 SPU，本组所有合法行作为它的 SKU |
+| 名称已存在 + **规格不同** | **复用现有 `productId`，只追加 SKU，不新建 SPU** |
+| 名称已存在 + **规格相同** | 只拒绝**这一行**，同组其它规格的行照常导入 |
+
+> 原来的「按名称整组拒绝」是为了防止「同名 + 换一批 SKU 编码」的重传静默建出第二个同名 SPU
+> （`product.name` 上没有唯一索引）。但它把「给已有商品补一个规格」这个完全正当的诉求
+> 也一并堵死了。改成按 `(名称, 规格)` 逐行判定后，真正的重复仍被拦住，合法的追加得以放行。
+>
+> **复用 SPU 时商品级字段（分类 / 副标题 / 主图）一律忽略**：这三列描述的是 SPU，
+> 而本次只往既有 SPU 追加 SKU。所以复用分支既不解析分类、也不写这三个字段 ——
+> 顺手写入等于「悄悄改了别人的商品」，比忽略更危险。
+>
+> 查重 SQL `ProductMapper.selectOccupiedProductSpecs` 用的是 **LEFT JOIN**：库里存在
+> 「SKU 全被逻辑删除、商品本身还在」的行，用 INNER JOIN 会让它在结果里消失，
+> 导入于是给它再建一个同名 SPU（正是规则要消灭的现象）。LEFT JOIN 让这类商品以
+> `specs = null` 出现，消费方据此既能拿到 `productId`（复用），
+> 又不会把「没有 SKU」误判成「占用了一个空规格」。
+
+**校验分两级**，顺序不能颠倒（组级里的分类 / 长度校验**只在新建 SPU 时执行**）：
 
 1. **组级（整个商品）**：商品名非空且 ≤100；分类名称能**唯一**解析到分类 id。
    - 分类不存在、或存在多个同名分类 → 该商品**所有行**都记为失败（`groupError` 逐行铺开）。
@@ -202,7 +284,10 @@ product 模块本身**不直接引 Fesod / POI**。
 - 后台统一前缀 `/api/admin/**`，被 `SecurityConfig.adminSecurityFilterChain` 的 `adminPrincipalAuthorizationManager` 严格校验必须是 `AdminUserPrincipal`（见 [SecurityConfig.java](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/main/java/com/springshop/web/security/SecurityConfig.java)）。
 - 控制器方法级按钮权限：
   - 分类：`product:category:{list|create|update|delete}`（由 [AdminCategoryController](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/controller/admin/AdminCategoryController.java) 的 `@PreAuthorize` 生效）。
-  - 商品：`product:product:{list|create|update}`，导入另用 `product:product:import`（由 [AdminProductController](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/controller/admin/AdminProductController.java) 的 `@PreAuthorize` 生效）。
+  - 商品：`product:product:{list|create|update|delete}`，导入另用 `product:product:import`（由 [AdminProductController](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/main/java/com/springshop/product/controller/admin/AdminProductController.java) 的 `@PreAuthorize` 生效）。
+    - `DELETE /api/admin/products/{id}`（2026-10-09 新增）→ 权限 `product:product:delete`，**仅下架商品可删**（否则 2016），逻辑删除并连带 SKU / 图片。
+    - 新权限码必须在 `AdminDataInitializer` 里幂等注册菜单，否则
+      `AdminPermissionCoverageIntegrationTest` 会反射比对失败（CI 红）。
 - 商品导入 / 导出接口：
   - `POST /api/admin/products/import`（`multipart/form-data`，字段名 `file`）→ 权限 `product:product:import`，
     返回 `Result<ExcelTaskVO>`（异步受理）
@@ -256,11 +341,25 @@ MVP 首次启动时由 data initializer 将上述菜单写入 `menu` 表，配�
 全部使用 JUnit5 + Mockito，运行无需 MySQL/Redis。
 
 - [CategoryServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/category/service/impl/CategoryServiceImplTest.java)（9 用例）：create/updateNotFound/deleteHasChildren/deleteHasProducts/getById/tree，以及**分类树缓存**（命中不查库、miss 回源并写入、增删改后失效）。打桩小技巧：`selectCount(Wrappers.<ProductCategory>lambdaQuery().eq(...))` 的严格匹配会触发 Mockito `PotentialStubbingProblem`，替换为 `any()` 即可。
-- [ProductManageServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductManageServiceImplTest.java)（8 用例）：SKU 空、分类不存在、SKU 编码重复、创建成功、上下架不存在，以及**写后失效商品详情缓存**（`verify(stringRedisTemplate).delete(RedisKeys.productDetail(id))`）。
+- [ProductManageServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductManageServiceImplTest.java)（17 用例）：SKU 空、分类不存在、SKU 编码重复、创建成功、上下架不存在，**写后失效商品详情缓存**（`verify(stringRedisTemplate).delete(RedisKeys.productDetail(id))`），以及 2026-10-09 新增的 **唯一性 + 删除 + Bug A/B/C**：
+  - `(名称, 规格)` 撞库 → 2015；**同一次提交内**规格重复（全角冒号）→ 2015；修改时撞别的商品 → 2015；修改时**排除自己**（按商品粒度）不误报。
+  - 修改时**就地更新并保留 `sku_id`**、不再「先删全部」、库存未变时不留调整流水（Bug A/C）；
+    不传 `stock` 时**保持原值**（Bug B）。
+  - 删除：商品不存在 → 2010；**上架不可删** → 2016；下架可删且**连带删 SKU / 图片 + 失效缓存**。
+  - ⚠️ 顺序坑：`validateSkuCodesUnique` 现在排在 `validateCategoryExists` 之前，所以「SKU 编码重复」用例
+    **不能再桩 `categoryMapper`**（否则是 UnnecessaryStubbing）。
+- [SkuSpecNormalizerTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/support/SkuSpecNormalizerTest.java)（9 用例）：规格规范化纯函数 —— 空/空白/纯分隔符都归成同一个空键、分隔符变体、段内空白、全角冒号、**段排序**、空段丢弃、反向区分（`黑` vs `黑;尺寸:L`、`Size:A` vs `Size:a`）、幂等。
 - [ProductQueryServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductQueryServiceImplTest.java)（9 用例）：adminDetail 不存在 / appDetail 不存在 / appDetail 下架 / adminDetail 聚合 / adminPage 分页+分类名+最低价，以及**商品详情缓存**（命中直接返回、miss 回源写缓存、商品不存在时写 `NULL` 占位符并给短 TTL 防穿透）。
   - 单测预热 MyBatis-Plus Lambda cache：`@BeforeAll warmupMybatisPlusLambdaCache()` 手动 `TableInfoHelper.initTableInfo`，否则 `LambdaQueryWrapper` 在走 Mockito 打桩前因无 lambda 元数据抛异常。
   - 存在一些共享桩，类上使用 `@MockitoSettings(strictness = Strictness.LENIENT)` 规避 UnnecessaryStubbingException。
-- [ProductImportServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductImportServiceImplTest.java)（14 用例）：同名多行聚合为一个 SPU、分类不存在整组失败、同名分类歧义、SKU 编码重复、价格精度、状态非法、空文件 / 非 Excel 后缀、模板可解析等。
+- [ProductImportServiceImplTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-product/src/test/java/com/springshop/product/product/service/impl/ProductImportServiceImplTest.java)（22 用例）：同名多行聚合为一个 SPU、分类不存在整组失败、SKU 编码重复、价格精度、状态非法、空文件 / 非 Excel 后缀、模板可解析等。
+  - **2026-10-09 按新语义改写的部分**：`(名称, 规格)` 逐行判定 ——
+    名称已存在 + 规格不同 → **复用 `productId` 追加 SKU**（`verify(productMapper, never()).insertBatch(any())`）；
+    名称已存在 + 规格相同 → 只拒那一行；规格规范化（段序 / 全角冒号）视为重复；文件内同名同规格第二行被拒；
+    「复用分支忽略商品级字段（分类填了不存在的名字也不失败）」；
+    「LEFT JOIN 返回 `specs = null`（SKU 全被逻辑删除的同名商品）时应复用而不是再建一个 SPU」。
+  - ⚠️ 桩的坑：`stubInsertAssignsId()` 里的 `productMapper.insertBatch` 必须 `lenient()` ——
+    复用分支本来就不该建 SPU，严格模式下会被判为无用桩；而「全部行都被拒」的用例**干脆不要调它**。
   - 这个测试**真的生成 xlsx**：用 `ExcelSupport.write(...)` 造字节数组，再包成 `MockMultipartFile` 喂给 service，
     比手写 `InputStream` 更贴近真实链路，也顺带覆盖了读写两个方向。
   - 同样需要 `@BeforeAll warmupMybatisPlusLambdaCache()`（实体：`Product` / `ProductSku` / `ProductCategory`）。
@@ -274,15 +373,30 @@ MVP 首次启动时由 data initializer 将上述菜单写入 `menu` 表，配�
 - `admin_product_page_should_require_login`：未登录访问 `/api/admin/products` → 401
 - `app_product_page_should_public`：匿名访问 `/api/products?current=1&size=5` → 200 + Result.code = 200
 
-[ProductImportIntegrationTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/test/java/com/springshop/web/ProductImportIntegrationTest.java)（7 用例）：覆盖「管理员登录 → 建分类 → 上传 Excel → 落库 → 后台列表可见」全链路。
+[ProductImportIntegrationTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/test/java/com/springshop/web/ProductImportIntegrationTest.java)（9 用例）：覆盖「管理员登录 → 建分类 → 上传 Excel → 落库 → 后台列表可见」全链路。
 
 - 未带 token 导入 → 401
-- 同名两行 → 一个 SPU + 两个 SKU（断言 `productCount=1 / skuCount=2`）
+- 同名两行（**规格不同**）→ 一个 SPU + 两个 SKU
 - 导入后通过 `GET /api/admin/products?keyword=` 能查到
-- 分类不存在 → 该商品所有行失败，`failRowCount=2`
+- 分类不存在 → 该商品所有行失败，`failRows=2`
 - SKU 编码与库中已有重复 → 只失败那一行，其余行照常入库
+- **同名同规格重传 → 拒绝该行，且库里仍只有一个同名商品**（不再整组拒绝，但也不会建出第二个 SPU）
+- **同名不同规格重传 → 追加 SKU 到同一个 SPU**（库里仍只有一个同名商品）
 - 非 Excel 文件 → code = 2020
 - 模板下载 → 能重新解析，且示例行是两行同名商品
+
+[ProductUpdateIntegrationTest](file:///Users/qihaibing/Documents/Trae/spring_shop/spring-shop-web/src/test/java/com/springshop/web/ProductUpdateIntegrationTest.java)（12 用例）：
+**专为 `PUT /api/admin/products/{id}` 而建** —— 此前**没有任何用例打过这个接口**，
+而写服务单测是纯 Mockito（mapper 被 mock），于是 Bug A/B/C 在测试里**结构性不可见**、一路漏到线上。
+
+- 沿用同一 `sku_code` 修改必须**成功且保留原 `sku_id`**（Bug A + C）
+- 请求不带 `stock` → `inventory.stock` **保持原值**；带了且不同 → 同步到 `inventory` 表（Bug B）
+- 请求里没有的 SKU 被移除
+- `(名称, 规格)` 唯一性：同规格拒绝 2015、同名不同规格放行、全角冒号视为重复、
+  同一次提交内重复拒绝、改名撞别的商品拒绝、**修改时不把自己当成冲突**
+- 删除：上架被拒 2016 → 下架后删除成功且从后台列表消失；未知商品 2010
+- 断言一律走真实 HTTP + 真实库（库存断言查 `inventory` 表；`product_sku` 上已无库存列）；
+  分类在本类内自建，带 `@Transactional` 回滚，不污染共享 H2。
 
 > 这两个新测试类同样必须带齐 4 项注解（`@SpringBootTest` + `@AutoConfigureMockMvc` + `@ActiveProfiles("test")` + `@Transactional`）
 > 和 `@MockBean StringRedisTemplate`，否则在 CI 上会因缺 Redis 或数据串场而挂。

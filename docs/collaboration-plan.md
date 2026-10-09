@@ -72,7 +72,7 @@ main（受保护，随时可发布）
 | 增强项 | 说明 | 优先级 | 状态 |
 |--------|------|--------|------|
 | OpenAPI 安全配置 | Swagger UI 中标注 Authorize 按钮，调试带 token 更顺 | 中 | ✅ 已做（`OpenApiConfig`） |
-| 环境统一 | `.mvn/wrapper` + `.java-version`，保证全员 JDK/Maven 一致 | 中 | ⏳ 未做 |
+| 环境统一 | `.mvn/wrapper` + `.java-version`，保证全员 JDK/Maven 一致 | — | ❌ **已否决，不做**（用户 2026-10-09 决定） |
 | seed 数据 | 商品分类/演示商品初始化脚本（开发便利） | 中 | ✅ 已做（`seed.sql` / `sql/`） |
 | 通用工具封装 | `BeanUtils.copy` 封装、集合/断言小工具 | 低 | ⏳ 未做 |
 | 接口版本控制 | `/api/v1` 前缀 | 低 | ❌ 暂不做 |
@@ -115,7 +115,8 @@ main（受保护，随时可发布）
 
 | 场景 | 技术点 | 触发时机 | 状态 |
 |------|--------|----------|------|
-| 库存扣减并发 | 乐观锁（已配置）→ 进阶分布式锁 | 下单模块 | ✅ 已用「条件更新」实现（`UPDATE ... WHERE stock >= ?` 看影响行数），未引入分布式锁 |
+| 库存扣减并发 | 乐观锁（已配置）→ 进阶分布式锁 | 下单模块 | ✅ 已用「条件更新」实现（看影响行数），未引入分布式锁。**V9 起落在 `inventory` 表**：下单 `locked_stock + q WHERE stock - locked_stock >= q` / 支付出库 / 取消释放，三条都带条件，天然防重复与超卖 |
+| 库存三态与流水 | 独立库存表 + append-only 流水 | 商品模块 | ✅ 已做（V9：`inventory` 在库/锁定/可售三量 + `inventory_log` 同事务落流水） |
 | 下单防重/幂等 | 唯一订单号 + 防重校验 | 订单模块 | ✅ 已做（`uk_order_no` 兜底；支付侧按 `order_no` 幂等） |
 | 订单超时未付取消 | 定时任务（Spring `@Scheduled`） | 订单模块 | ✅ 已做（`OrderTimeoutTask`，60 秒扫描 + 条件更新） |
 | 商品详情热点 | 本地缓存 → Redis | 商品模块跑通后 | ✅ 已做（`product:detail:{id}`、`category:tree`） |

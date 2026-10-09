@@ -6,10 +6,10 @@
 
 **模块名**：`spring-shop-order`，隶属 spring-shop 单体业务模块之一，同时提供**前台接口（下单 / 地址）**与**后台接口（订单管理 / 发货）**。
 
-- **上游依赖**：`spring-shop-common`（统一响应、JSR303 校验、`UserContext`）、`spring-shop-product`（复用 SKU / 商品只读查询与库存、销量增减）、`spring-shop-cart`（复用购物车勾选条目的读取与清理）。
+- **上游依赖**：`spring-shop-common`（统一响应、JSR303 校验、`UserContext`）、`spring-shop-product`（复用 SKU / 商品只读查询与 `InventoryService` 库存流转、销量增减）、`spring-shop-cart`（复用购物车勾选条目的读取与清理）。
 - **下游被依赖**：`spring-shop-web`（启动模块），负责把 order 控制器扫入 Spring 容器、加载 Mapper。
 - **依赖方向**：`web → order → {cart, product} → common`，单向无环。order 只读商品数据、回写库存/销量，不改动 cart / product 的业务规则。
-- **当前范围**：收货地址 CRUD 与默认地址、购物车勾选项下单（快照 + 扣库存 + 清购物车 + 失效缓存）、我的订单分页 / 详情、支付 / 取消 / 确认收货、后台订单分页 / 发货 / 异步导出、待付款超时自动取消。
+- **当前范围**：收货地址 CRUD 与默认地址、购物车勾选项下单（快照 + **锁定库存** + 清购物车 + 失效缓存）、我的订单分页 / 详情、支付（**出库**）/ 取消（**释放锁定**）/ 确认收货、后台订单分页 / 发货 / 异步导出、待付款超时自动取消。
 
 **核心要点：** order 是项目里第一个「跨模块编排」的业务模块——它不重复实现商品校验或购物车读写，而是复用 cart / product 已暴露的 Mapper 与只读能力，通过单向依赖把「下单」串成一条事务链。
 
@@ -85,6 +85,7 @@ sequenceDiagram
     participant CM as CartItemMapper
     participant SM as ProductSkuMapper
     participant PM as ProductMapper
+    participant IVS as InventoryService
     participant OM as OrderMapper
     participant IM as OrderItemMapper
 
@@ -96,12 +97,13 @@ sequenceDiagram
     S->>S: 空 → 4002
     S->>SM: 批量 in(skuId) 查 SKU（避免 N+1）
     S->>PM: 批量 in(productId) 查商品（避免 N+1）
+    S->>S: 预生成 orderNo（库存流水要以它作 bizNo）
     loop 逐条勾选条目
         S->>S: requireOnSaleSku：SKU 存在(2011)、规格在售、商品在售(4003)
-        S->>SM: deductStock(skuId, quantity)
-        alt 影响行数 = 0
-            S->>S: 抛 4004 → 整个事务回滚
-        else 扣减成功
+        S->>IVS: lock(skuId, quantity, orderNo)
+        alt 条件更新影响 0 行（可售量不足 / 库存行缺失）
+            S->>S: 映射为 4004 → 整个事务回滚
+        else 锁定成功（可售 → 锁定，在库量不变）
             S->>PM: increaseSales(productId, quantity)
             S->>S: 组装 order_item 快照（名称/规格/主图/单价/小计）
         end
@@ -113,7 +115,13 @@ sequenceDiagram
     C-->>FE: Result(orderNo)
 ```
 
-**核心要点：** 整个 `create` 方法在一个 `@Transactional(rollbackFor = Exception.class)` 事务内，顺序为「校验 → 扣库存 → 写订单/明细 → 清购物车」。任一步失败（含库存不足）都会整体回滚——已扣的库存、已加的商品销量、已插入的订单、已删的购物车条目**全部回退**，绝不留脏数据。
+**核心要点：** 整个 `create` 方法在一个 `@Transactional(rollbackFor = Exception.class)` 事务内，顺序为「校验 → **锁定库存** → 写订单/明细 → 清购物车」。任一步失败（含库存不足）都会整体回滚——已锁的库存、已加的商品销量、已插入的订单、已删的购物车条目**全部回退**，绝不留脏数据。
+
+> **V9 起库存以 `inventory` 表为准**（`product_sku.stock` 那个迁移期镜像列已由 V10 删除，订单链路从不维护它）。
+> 三量语义：`stock` 在库实物量 / `locked_stock` 未付款订单锁定 / 可售 = 两者之差。
+> **下单只「锁定」——在库量不变、锁定量增加**；支付才「出库」（在库与锁定同时扣减）；
+> 取消 / 超时「释放」（锁定挪回可售）。三者的条件更新都在 `inventory` 上，
+> 业务侧只调 `InventoryService.lock/outbound/release`，不直接写库存表。
 
 关键实现细节（[OrderServiceImpl.java](spring-shop-order/src/main/java/com/springshop/order/service/impl/OrderServiceImpl.java)）：
 
@@ -122,29 +130,57 @@ sequenceDiagram
 - 批量查 SKU / 商品组装成 Map，逐条在 Map 里取，避免循环内查询（N+1）。
 - 在售校验 `requireOnSaleSku`：SKU 不在批量结果中 → `2011`；SKU `status != 1` 或所属商品不存在 / `status != 1` → `4003`。
 - 订单号规则：`yyyyMMddHHmmssSSS`（17 位）+ userId 后 3 位 + 3 位随机数，共 23 位，`uk_order_no` 兜底，不做重试。
+  > V9 起订单号**在进入明细循环之前就生成**（原实现是建订单时才生成）——
+  > 库存锁定的流水要用它当 `biz_no`，所以必须先有号。
 - `payAmount` 暂等于 `totalAmount`（无优惠券 / 运费）。
 - **缓存失效（易漏，务必保留）**：删完购物车行后必须补 `delete(RedisKeys.cart(userId))`。`create()` 是**绕过 `CartServiceImpl`** 直接操作 `cartItemMapper` 的，所以缓存不会自动失效 —— 曾经因此产生「下单后购物车仍显示且仍勾选」的脏读（TTL 是 7 天滑动过期，用户继续操作会不断续期），2026-10-08 修复（`895b976`）。同时下单 / 取消还会失效涉及商品的 `product:detail:{id}`（销量变了）。
   > ⚠️ 这类问题**集成测试测不出来**：`OrderIntegrationTest` 用 `@MockBean StringRedisTemplate` 把 Redis mock 掉，缓存永远 miss、读路径永远回源 DB。所以单测必须断言「失效方法被调用」，见 `OrderServiceImplTest#create_should_evict_cart_cache`。
 
-## 六、库存并发方案：条件更新扣减
+## 六、库存并发方案：条件更新（V9 起落在 `inventory` 表上）
 
-商品侧新增两个条件更新 SQL（[ProductSkuMapper.java](spring-shop-product/src/main/java/com/springshop/product/product/mapper/ProductSkuMapper.java) / [ProductMapper.java](spring-shop-product/src/main/java/com/springshop/product/product/mapper/ProductMapper.java)）：
+**不再有 `product_sku` 上的扣减 / 回滚 SQL。** 库存三态流转由 `InventoryService` 统一提供，
+底层是 [InventoryMapper.java](spring-shop-product/src/main/java/com/springshop/product/product/mapper/InventoryMapper.java)
+的四条条件更新（都带 `is_deleted = 0` 与 `version = version + 1`）：
 
 ```sql
--- 扣减：库存充足才生效，影响行数 0 即库存不足
-UPDATE product_sku SET stock = stock - #{quantity}, version = version + 1
- WHERE id = #{skuId} AND stock >= #{quantity}
+-- 下单锁定：可售量足够才生效，影响行数 0 即库存不足（在库量不变）
+UPDATE inventory SET locked_stock = locked_stock + #{q}, version = version + 1
+ WHERE sku_id = #{skuId} AND stock - locked_stock >= #{q} AND is_deleted = 0
 
--- 回滚（取消订单） / 销量回滚用 GREATEST 防止减成负数
-UPDATE product_sku SET stock = stock + #{quantity}, version = version + 1 WHERE id = #{skuId}
-UPDATE product    SET sales = GREATEST(sales - #{quantity}, 0), version = version + 1 WHERE id = #{productId}
+-- 支付出库：锁定转已售，在库与锁定同时扣减；0 行 = 锁定量不足（防重复出库）
+UPDATE inventory SET stock = stock - #{q}, locked_stock = locked_stock - #{q}, version = version + 1
+ WHERE sku_id = #{skuId} AND locked_stock >= #{q} AND is_deleted = 0
+
+-- 取消 / 超时释放：锁定挪回可售；0 行 = 锁定量不足（防重复释放）
+UPDATE inventory SET locked_stock = locked_stock - #{q}, version = version + 1
+ WHERE sku_id = #{skuId} AND locked_stock >= #{q} AND is_deleted = 0
+
+-- 后台覆盖在库量（绝对赋值）：不允许调到低于当前锁定量
+UPDATE inventory SET stock = #{stock}, version = version + 1
+ WHERE sku_id = #{skuId} AND #{stock} >= locked_stock AND is_deleted = 0
+
+-- 销量回滚仍走 product 表，用 GREATEST 防止减成负数
+UPDATE product SET sales = GREATEST(sales - #{q}, 0), version = version + 1 WHERE id = #{productId}
 ```
 
-**核心要点：** 把「判断库存」和「扣减库存」合并进**一条 UPDATE**，由数据库的行锁保证原子性。并发下要么这条 SQL 成功扣减，要么因 `stock >= quantity` 不成立而返回影响行数 0，业务据此抛 `4004`——不存在「先查再扣」中间被插队的竞态窗口。
+**核心要点：** 把「判断」和「变更」合并进**一条 UPDATE**，由数据库行锁保证原子性。
+并发下要么成功，要么因条件不成立返回影响行数 0，业务据此抛异常——
+不存在「先查再改」中间被插队的竞态窗口。
+
+**⚠️ 条件更新同时是幂等屏障**：`outbound` / `releaseLock` 都要求 `locked_stock >= q`，
+所以**重复支付不会重复出库、重复取消不会重复释放**（第二次影响 0 行）。
+这也是 `OrderServiceImpl.pay()` / `cancel()` 从 `updateById` 改成条件更新
+（`OrderMapper.markPaid` / `cancelIfPendingPayment`）的原因 ——
+否则状态会被重复推进一次，进而重复触发一次库存变更。
+
+**⚠️ 改库存必须同事务写流水**：`InventoryService` 的每个写方法都是
+「条件更新 → 同事务回读该行 → 算出前后值 → 插 `inventory_log`」。
+MySQL 的 `UPDATE` 不返回旧值，所以只能更新后回读、再倒推 `before = after ∓ delta`；
+更新过该行、本事务持有行锁，读到的值准确。**条件更新成功 ⇒ 必有一条流水**，二者同生共死。
 
 | 方案 | 做法 | 优点 | 代价 | 本项目取舍 |
 |------|------|------|------|-----------|
-| **条件更新（当前）** | 单条 `UPDATE ... WHERE stock >= ?`，看影响行数 | 无需额外中间件；原子、代码极简；失败可精确回滚 | 高并发下同一 SKU 会串行争锁；失败即整单重试由用户承担 | ✅ 采用 |
+| **条件更新（当前）** | 单条 `UPDATE ... WHERE <条件>`，看影响行数 | 无需额外中间件；原子、代码极简；天然幂等；失败可精确回滚 | 高并发下同一 SKU 会串行争锁；失败即整单重试由用户承担 | ✅ 采用 |
 | 分布式锁 / Redis 预扣 | 先锁住 SKU 或用 Redis 预占库存，再落库 | 峰值抗压、削峰 | 引入锁与缓存一致性、失效补偿的复杂度，与当前单体架构阶段的复杂度预算不匹配 | ❌ 暂不做 |
 | 悲观锁 `SELECT ... FOR UPDATE` | 事务内先锁行再判断 | 语义直观 | 长时间持锁、易死锁，并发吞吐差 | ❌ 不采用 |
 
@@ -168,9 +204,9 @@ UPDATE product    SET sales = GREATEST(sales - #{quantity}, 0), version = versio
 
 ```mermaid
 stateDiagram-v2
-    [*] --> 待付款: POST /api/orders（下单）
-    待付款 --> 待发货: POST /api/orders/{no}/pay（前台支付）
-    待付款 --> 已取消: POST /api/orders/{no}/cancel（前台，回滚库存与销量）
+    [*] --> 待付款: POST /api/orders（下单，锁定库存）
+    待付款 --> 待发货: POST /api/orders/{no}/pay（前台支付，出库）
+    待付款 --> 已取消: POST /api/orders/{no}/cancel（前台，释放锁定与销量）
     待发货 --> 待收货: POST /api/admin/orders/{no}/ship（后台发货）
     待收货 --> 已完成: POST /api/orders/{no}/confirm（前台确认收货）
     已退款: 已退款（6，预留未实现）
@@ -187,8 +223,15 @@ stateDiagram-v2
 **核心要点：**
 
 - 状态流转集中在私有方法 `requireOrder(userId, orderNo, expect)` 里校验：先按 `orderNo + userId` 查订单，**订单不存在或越权一律 `4005`**，再比对期望状态，**非法流转统一 `4006`**，杜绝散落的 if 判断。
-- `cancel` 是唯一带副作用的流转：在 `@Transactional` 内逐条读明细，`restoreStock` 回滚库存 + `decreaseSales` 回滚销量，与状态变更同事务；**只有「待付款」可取消，已支付订单不可取消**（退款属后续迭代）。
-- `ship` 由后台调用，无 `userId` 概念，直接按 `orderNo` 查（不存在 `4005`，状态不符 `4006`）。
+- `pay` / `markPaid` / `cancel` / `systemCancel` 都先做**条件更新推进状态**（`markPaid` / `cancelIfPendingPayment`），
+  影响 0 行即说明并发落败（已被支付 / 已取消），分别返回 `4006` 或静默放弃，**然后才在同一事务内动库存**。
+  这样「重复支付重复出库」「重复取消重复释放」在结构上不可能发生。
+- **带副作用的流转（V9 起）**：
+  - `pay` / `markPaid` → `outbound`：**出库**（在库与锁定同时扣减）；
+  - `cancel` / `systemCancel` → `release`：**释放锁定** + `decreaseSales` 回滚销量；
+  - 三者都在 `@Transactional` 内与状态变更同事务，任一步失败整体回滚。
+  **只有「待付款」可取消，已支付订单不可取消**（退款属后续迭代）。
+- `ship` 由后台调用，无 `userId` 概念，直接按 `orderNo` 查（不存在 `4005`，状态不符 `4006`）。**发货不动库存**（库存在支付时已出）。
 - 状态 `6 已退款` 已在枚举与建表脚本中预留，但**没有任何接口会写入它**（属 YAGNI）。
 
 ## 九、接口清单
@@ -300,7 +343,7 @@ mvn clean verify
 - `@Scheduled(fixedDelay = 60_000)` 每 60 秒扫描一次，查 `status = 1（待付款）AND create_time < now - cancelMinutes` 的订单。
 - 超时线由 `order.timeout.cancel-minutes` 控制（**默认 30 分钟**，未在 `application.yml` 中显式配置时用代码默认值）。
 - 逐单调用 `OrderService#systemCancel(order)`，**单笔失败只记 `log.error`，不影响同批其余订单**。
-- `systemCancel` 与用户主动取消共用同一套回滚逻辑（`restoreStock` + `decreaseSales`），状态变更用**条件更新**（`WHERE id = ? AND status = 1`，影响 0 行即放弃、不抛错），因此与「用户支付」「用户取消」天然互斥：只有仍是待付款的单会被处理。
+- `systemCancel` 与用户主动取消共用同一套回滚逻辑（`InventoryService.release` 释放锁定 + `decreaseSales`），状态变更用**条件更新**（`WHERE id = ? AND status = 1`，影响 0 行即放弃、不抛错），因此与「用户支付」「用户取消」天然互斥：只有仍是待付款的单会被处理。
 - **无分布式锁**：`fixedDelay` 周期短、处理量小，且 `systemCancel` 本身幂等，加锁反而可能因锁竞争延迟取消时效。
 
 > 该任务目前**没有失败告警**，失败只在日志里留一行 error；也没有任务日志表。
