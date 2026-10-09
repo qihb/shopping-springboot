@@ -21,6 +21,11 @@
 | `CartRecallTask` | `spring-shop-stats` | cron 每日 4:00（`zone`） | ✅ Redis | ✅ `stats_task_log` | ✅ |
 | `ExcelTaskCleanupTask` | `spring-shop-common` | cron 每日 3:30 | ❌ | ❌ | ❌ |
 
+> 补充事实（2026-10-08 核对）：全仓**没有**自定义 `TaskScheduler` / `ThreadPoolTaskScheduler` Bean，
+> 也没有任何调度中心依赖（无 Quartz / XXL-JOB / ElasticJob / PowerJob / ShedLock）。
+> 走的是 Spring Boot **默认单线程调度器** —— 一个任务阻塞会推迟其他任务的触发时刻。
+> 现在 3 个任务都很快，尚未暴露；任务变多、单个任务变慢时，这是第一个会咬人的点。
+
 其中前两个的逐项对比：
 
 | 能力 | `OrderTimeoutTask` | `CartRecallTask` |
