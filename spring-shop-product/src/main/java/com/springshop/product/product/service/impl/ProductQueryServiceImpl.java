@@ -98,7 +98,7 @@ public class ProductQueryServiceImpl implements ProductQueryService {
     }
 
     @Override
-    public List<ProductListVO> adminExportPage(ProductExportQuery query, long current, long pageSize) {
+    public List<ProductListVO> adminExportPage(ProductExportQuery query, Long lastId, long pageSize) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
         if (query != null) {
             if (query.getIds() != null && !query.getIds().isEmpty()) {
@@ -116,9 +116,11 @@ public class ProductQueryServiceImpl implements ProductQueryService {
                 }
             }
         }
+        // keyset 游标：只取「比上一页最后一条更小」的 id，窗口不会因为别人新增商品而漂移
+        wrapper.lt(lastId != null, Product::getId, lastId);
         wrapper.orderByDesc(Product::getId);
-        // searchCount=false：导出不展示总页数，省掉每页一次 COUNT
-        IPage<Product> page = productMapper.selectPage(new Page<>(current, pageSize, false), wrapper);
+        // 游标分页每页都取第一页；searchCount=false：导出不展示总页数，省掉每页一次 COUNT
+        IPage<Product> page = productMapper.selectPage(new Page<>(1, pageSize, false), wrapper);
         return buildListPageResult(page).getRecords();
     }
 

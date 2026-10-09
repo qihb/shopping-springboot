@@ -51,7 +51,8 @@ public class AdminUserExportServiceImpl implements AdminUserExportService {
     private void processExport(ExcelTaskContext context) throws IOException {
         int exported = ExcelExportSupport.export(context, AdminUserExportQuery.class,
                 AdminUserExportRow.class, SHEET_NAME,
-                (query, current, pageSize) -> adminUserService.exportPage(query, current, pageSize)
+                AdminUserExportRow::getId,
+                (query, lastId, pageSize) -> adminUserService.exportPage(query, lastId, pageSize)
                         .stream().map(AdminUserExportRow::from).toList());
         log.info("管理员导出完成 taskNo={} 共 {} 行", context.getTaskNo(), exported);
     }

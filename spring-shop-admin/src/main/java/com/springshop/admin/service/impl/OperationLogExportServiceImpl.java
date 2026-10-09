@@ -52,7 +52,8 @@ public class OperationLogExportServiceImpl implements OperationLogExportService 
     private void processExport(ExcelTaskContext context) throws IOException {
         int exported = ExcelExportSupport.export(context, OperationLogExportQuery.class,
                 OperationLogExportRow.class, SHEET_NAME,
-                (query, current, pageSize) -> operationLogService.exportPage(query, current, pageSize)
+                OperationLogExportRow::getId,
+                (query, lastId, pageSize) -> operationLogService.exportPage(query, lastId, pageSize)
                         .stream().map(OperationLogExportRow::from).toList());
         log.info("操作日志导出完成 taskNo={} 共 {} 行", context.getTaskNo(), exported);
     }

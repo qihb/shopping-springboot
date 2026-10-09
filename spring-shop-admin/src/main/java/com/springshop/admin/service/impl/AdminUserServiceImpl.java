@@ -72,7 +72,7 @@ public class AdminUserServiceImpl implements AdminUserService {
     }
 
     @Override
-    public List<AdminUserVO> exportPage(AdminUserExportQuery query, long current, long pageSize) {
+    public List<AdminUserVO> exportPage(AdminUserExportQuery query, Long lastId, long pageSize) {
         LambdaQueryWrapper<AdminUser> wrapper = Wrappers.lambdaQuery();
         if (query != null) {
             if (query.getIds() != null && !query.getIds().isEmpty()) {
@@ -84,9 +84,12 @@ public class AdminUserServiceImpl implements AdminUserService {
                         .eq(query.getStatus() != null, AdminUser::getStatus, query.getStatus());
             }
         }
+        // keyset 游标：正序导出，所以取「比上一页最后一条更大」的 id。
+        // 不用 OFFSET 是因为导出要跑几分钟，期间新增管理员会让后续页窗口整体后移
+        wrapper.gt(lastId != null, AdminUser::getId, lastId);
         wrapper.orderByAsc(AdminUser::getId);
-        // searchCount=false：导出不展示总页数，省掉每页一次 COUNT
-        Page<AdminUser> page = adminUserMapper.selectPage(new Page<>(current, pageSize, false), wrapper);
+        // 游标分页每页都取第一页；searchCount=false：导出不展示总页数，省掉每页一次 COUNT
+        Page<AdminUser> page = adminUserMapper.selectPage(new Page<>(1, pageSize, false), wrapper);
         return toVOList(page.getRecords());
     }
 

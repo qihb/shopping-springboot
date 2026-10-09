@@ -56,7 +56,8 @@ public class OrderExportServiceImpl implements OrderExportService {
     private void processExport(ExcelTaskContext context) throws IOException {
         int exported = ExcelExportSupport.export(context, OrderExportQuery.class,
                 OrderExportRow.class, SHEET_NAME,
-                (query, current, pageSize) -> orderService.exportPage(query, current, pageSize)
+                OrderExportRow::getId,
+                (query, lastId, pageSize) -> orderService.exportPage(query, lastId, pageSize)
                         .stream().map(OrderExportRow::from).toList());
         log.info("订单导出完成 taskNo={} 共 {} 行", context.getTaskNo(), exported);
     }

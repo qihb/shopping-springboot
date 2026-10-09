@@ -16,10 +16,13 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -35,6 +38,10 @@ import static org.mockito.Mockito.verify;
  * <p>四个导出（商品 / 管理员 / 操作日志 / 订单）共用 {@link ExcelExportSupport#export}，
  * 所以这里的边界用例就是所有导出的边界用例：
  * 「分页翻到底不漏行不重复」「最后一页不满要提前结束」「一条都没有也要写出表头」。
+ *
+ * <p>分页方式已由 OFFSET 改为 keyset（游标），因此这里还额外钉住了改动的原因：
+ * 导出期间有并发写入时，OFFSET 的窗口会整体后移导致重复/漏行，
+ * 而游标只认「比上一页最后一条更小的 id」，窗口不会移动。
  */
 class ExcelExportSupportTest {
 
@@ -77,18 +84,102 @@ class ExcelExportSupportTest {
     @Test
     void export_shouldStopAfterShortPage() throws IOException {
         properties.setExportPageSize(2);
-        List<Long> requestedPages = new ArrayList<>();
+        List<Long> requestedCursors = new ArrayList<>();
         List<DemoRow> all = demoRows(3); // 两页：2 + 1
 
         int exported = ExcelExportSupport.export(context, DemoQuery.class, DemoRow.class, "测试",
-                (query, current, pageSize) -> {
-                    requestedPages.add(current);
-                    return page(all, current, pageSize);
+                DemoRow::getId,
+                (query, lastId, pageSize) -> {
+                    requestedCursors.add(lastId);
+                    return pageAfter(all, lastId, pageSize);
                 });
 
         assertEquals(3, exported);
-        // 第 2 页只有 1 行（不满），说明已取完，不该再发一次必然为空的查询
-        assertEquals(List.of(1L, 2L), requestedPages);
+        // 第一页不带游标；第二页带上一页最后一条的 id（倒序导出，3 行里第 2 条 = 2）。
+        // 第 2 页只剩 1 行（不满），说明已取完，不该再发一次必然为空的查询
+        assertEquals(Arrays.asList(null, 2L), requestedCursors);
+    }
+
+    @Test
+    void export_shouldNotDuplicateOrSkipRowsWhenDataIsInsertedMidExport() throws IOException {
+        properties.setExportPageSize(2);
+        // 导出期间有并发写入：第一页取完后，新插入一条更大的 id（新订单 / 新日志就是这么产生的）
+        List<DemoRow> table = new ArrayList<>(demoRows(5));
+        List<Long> exportedIds = new ArrayList<>();
+
+        int exported = ExcelExportSupport.export(context, DemoQuery.class, DemoRow.class, "测试",
+                DemoRow::getId,
+                (query, lastId, pageSize) -> {
+                    List<DemoRow> page = pageAfter(table, lastId, pageSize);
+                    if (lastId == null) {
+                        table.add(new DemoRow(100L, "新插入"));
+                    }
+                    page.forEach(row -> exportedIds.add(row.getId()));
+                    return page;
+                });
+
+        // 游标锚在 id 上，插入数据不会让窗口整体后移：既没有重复导出写过的行，
+        // 也没有整页跳过排在边界上的行
+        assertEquals(5, exported);
+        assertEquals(List.of(5L, 4L, 3L, 2L, 1L), exportedIds);
+    }
+
+    @Test
+    void offsetPagination_shouldDuplicateRowsUnderTheSameConcurrency() {
+        // 对照组：同一场景换成 OFFSET 分页重跑一遍，用于说明「为什么必须改成 keyset」。
+        // 这段不参与生产代码，是本次改动的可执行依据。
+        List<DemoRow> table = new ArrayList<>(demoRows(5));
+        List<Long> offsetIds = new ArrayList<>();
+        for (long current = 1; ; current++) {
+            List<DemoRow> page = offsetPage(table, current, 2);
+            if (page.isEmpty()) {
+                break;
+            }
+            page.forEach(row -> offsetIds.add(row.getId()));
+            if (current == 1) {
+                // 与 keyset 用例同一时点插入同一条数据
+                table.add(new DemoRow(100L, "新插入"));
+            }
+            if (page.size() < 2) {
+                break;
+            }
+        }
+
+        // 第 2 页的窗口整体后移了一行：id=4 在第一页已经导出过，这里又被导出一次
+        assertEquals(List.of(5L, 4L, 4L, 3L, 2L, 1L), offsetIds);
+        assertNotEquals(List.of(5L, 4L, 3L, 2L, 1L), offsetIds,
+                "OFFSET 分页在并发写入下会重复导出行，这正是本次改成 keyset 的原因");
+    }
+
+    @Test
+    void export_shouldStopWhenCursorDoesNotAdvance() throws IOException {
+        properties.setExportPageSize(2);
+        // 取数实现忘了按游标过滤（或行模型取不到主键）时，每一页都会取回同一批数据。
+        // 不拦的话任务会一直往同一个文件里写，直到磁盘写满 —— 必须提前收尾。
+        List<DemoRow> all = demoRows(4);
+
+        int exported = ExcelExportSupport.export(context, DemoQuery.class, DemoRow.class, "测试",
+                DemoRow::getId,
+                // 无视 lastId，每页都返回同一批数据（等价于「忘了按游标过滤」）
+                (query, lastId, pageSize) -> pageAfter(all, null, pageSize));
+
+        assertEquals(4, exported, "游标不推进时应当只导出两页就收尾，而不是死循环");
+        assertEquals(4, readRows(outputPath).size());
+    }
+
+    @Test
+    void export_shouldStopWhenRowModelHasNoId() throws IOException {
+        properties.setExportPageSize(2);
+        // idOf 取不到主键（返回 null）时同样必须收尾：拿不到游标就无法安全地翻下一页，
+        // 宁可少导一页（日志里有 warn），也不能把 null 当游标一直翻下去
+        List<DemoRow> all = demoRows(4);
+
+        int exported = ExcelExportSupport.export(context, DemoQuery.class, DemoRow.class, "测试",
+                row -> null,
+                (query, lastId, pageSize) -> pageAfter(all, lastId, pageSize));
+
+        assertEquals(2, exported, "第一页取满后拿不到游标，应当收尾");
+        assertEquals(2, readRows(outputPath).size());
     }
 
     @Test
@@ -118,7 +209,8 @@ class ExcelExportSupportTest {
 
         List<DemoQuery> seen = new ArrayList<>();
         ExcelExportSupport.export(context, DemoQuery.class, DemoRow.class, "测试",
-                (query, current, pageSize) -> {
+                DemoRow::getId,
+                (query, lastId, pageSize) -> {
                     seen.add(query);
                     return List.of();
                 });
@@ -146,18 +238,32 @@ class ExcelExportSupportTest {
 
     private int exportFrom(List<DemoRow> all) throws IOException {
         return ExcelExportSupport.export(context, DemoQuery.class, DemoRow.class, "测试",
-                (query, current, pageSize) -> page(all, current, pageSize));
+                DemoRow::getId,
+                (query, lastId, pageSize) -> pageAfter(all, lastId, pageSize));
     }
 
     /**
-     * 按页切片，模拟数据库分页查询
+     * 模拟 keyset 取一页：{@code ORDER BY id DESC} 且 {@code WHERE id < lastId}，
+     * 与生产代码里四个 {@code exportPage} 的写法一致（倒序导出用 {@code lt}）。
      */
-    private List<DemoRow> page(List<DemoRow> all, long current, long pageSize) {
+    private List<DemoRow> pageAfter(List<DemoRow> all, Long lastId, long pageSize) {
+        return all.stream()
+                .filter(row -> lastId == null || row.getId() < lastId)
+                .sorted(Comparator.comparingLong(DemoRow::getId).reversed())
+                .limit(pageSize)
+                .toList();
+    }
+
+    /** 模拟 OFFSET 取一页：{@code ORDER BY id DESC LIMIT pageSize OFFSET (current-1)*pageSize} */
+    private List<DemoRow> offsetPage(List<DemoRow> all, long current, long pageSize) {
+        List<DemoRow> sorted = all.stream()
+                .sorted(Comparator.comparingLong(DemoRow::getId).reversed())
+                .toList();
         int from = (int) ((current - 1) * pageSize);
-        if (from >= all.size()) {
+        if (from >= sorted.size()) {
             return List.of();
         }
-        return all.subList(from, (int) Math.min(all.size(), from + pageSize));
+        return sorted.subList(from, (int) Math.min(sorted.size(), from + pageSize));
     }
 
     private List<DemoRow> demoRows(int count) {

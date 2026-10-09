@@ -58,7 +58,8 @@ public class ProductExportServiceImpl implements ProductExportService {
     private void processExport(ExcelTaskContext context) throws IOException {
         int exported = ExcelExportSupport.export(context, ProductExportQuery.class,
                 ProductExportRow.class, SHEET_NAME,
-                (query, current, pageSize) -> productQueryService.adminExportPage(query, current, pageSize)
+                ProductExportRow::getId,
+                (query, lastId, pageSize) -> productQueryService.adminExportPage(query, lastId, pageSize)
                         .stream().map(ProductExportRow::from).toList());
         log.info("商品导出完成 taskNo={} 共 {} 行", context.getTaskNo(), exported);
     }

@@ -21,8 +21,11 @@ public interface OperationLogService {
     /**
      * 导出一页操作日志
      *
-     * @param current  页码，从 1 开始
+     * @param lastId   keyset 游标：上一页最后一条的 id，{@code null} 表示从第一页开始。
+     *                 按 id 倒序取 {@code id < lastId}。不能用 OFFSET 页码——
+     *                 导出要跑几分钟，而审计日志一直在写，窗口会持续漂移，
+     *                 导致已导出的日志重复、边缘的日志被整页跳过
      * @param pageSize 每页条数
      */
-    List<OperationLogVO> exportPage(OperationLogExportQuery query, long current, long pageSize);
+    List<OperationLogVO> exportPage(OperationLogExportQuery query, Long lastId, long pageSize);
 }

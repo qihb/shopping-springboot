@@ -271,7 +271,7 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
-    public List<OrderVO> exportPage(OrderExportQuery query, long current, long pageSize) {
+    public List<OrderVO> exportPage(OrderExportQuery query, Long lastId, long pageSize) {
         OrderExportQuery safeQuery = query == null ? new OrderExportQuery() : query;
         LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
         if (safeQuery.getIds() != null && !safeQuery.getIds().isEmpty()) {
@@ -281,10 +281,13 @@ public class OrderServiceImpl implements OrderService {
             wrapper.like(StringUtils.hasText(safeQuery.getOrderNo()), Order::getOrderNo, safeQuery.getOrderNo())
                     .eq(safeQuery.getStatus() != null, Order::getStatus, safeQuery.getStatus());
         }
-        // 与列表页同序（id 倒序），保证分批翻页时不会因为顺序漂移而漏行/重复
+        // keyset 游标：只取「比上一页最后一条更小」的 id。
+        // 与列表页同序（id 倒序），但翻页靠游标而不是 OFFSET——
+        // 导出要跑几分钟，期间有人下单会让 OFFSET 的窗口整体后移，导致重复行与漏行
+        wrapper.lt(lastId != null, Order::getId, lastId);
         wrapper.orderByDesc(Order::getId);
-        // searchCount=false：导出不展示总页数，省掉每页一次 COUNT
-        Page<Order> page = orderMapper.selectPage(new Page<>(current, pageSize, false), wrapper);
+        // 游标分页每页都取第一页；searchCount=false：导出不展示总页数，省掉每页一次 COUNT
+        Page<Order> page = orderMapper.selectPage(new Page<>(1, pageSize, false), wrapper);
 
         Map<Long, List<OrderItem>> itemMap = loadItems(page.getRecords());
         return page.getRecords().stream()
