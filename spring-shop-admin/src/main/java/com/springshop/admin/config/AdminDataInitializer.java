@@ -224,6 +224,9 @@ public class AdminDataInitializer implements ApplicationRunner {
         Menu stats = ensureMenu("数据运营", 1, 0L, "/stats", "stats", "DataAnalysis", 4, menus);
         Menu recall = ensureMenu("加购未买召回", 2, stats.getId(), "/stats/recall", "stats:recall:list", null, 1, menus);
         ensureMenu("执行圈人", 3, recall.getId(), null, "stats:recall:build", null, 1, menus);
+        // 任务执行日志与召回并列（不是它的子菜单）：这张表将来还会承载订单超时、
+        // Excel 清理等任务的执行记录，挂在 recall 下语义就错了
+        ensureMenu("任务执行日志", 2, stats.getId(), "/stats/task-logs", "stats:task-log:list", null, 2, menus);
 
         return menus;
     }

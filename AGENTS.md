@@ -58,7 +58,8 @@ spring_shop/
 │   └── src/main/java/com/springshop/stats/
 │       ├── config/             # RecallProperties（阈值全部配置化）
 │       ├── controller/admin/   # AdminRecallController（/api/admin/stats/recall/**）
-│       ├── entity/ mapper/ service/ task/ vo/
+│       │                       #   AdminTaskLogController（/api/admin/stats/task-logs）
+│       ├── entity/ mapper/ service/ task/ dto/ vo/
 │       └── pom.xml             # 依赖 common + cart + product + order
 └── spring-shop-web/            # 启动模块：依赖所有业务模块
     └── src/main/java/com/springshop/
@@ -92,6 +93,10 @@ spring_shop/
   关键口径：`cart_item` 因下单成功即被物理删除，**其剩余行按定义就是「加购未买」集合**；
   `create_time` 只在首次加购时写入，是准确的「首次加购时刻」。
   跑批走 `@Scheduled(cron, zone)` + Redis 锁 + `stats_task_log`，阈值全部在 `stats.cart-recall.*` 配置。
+  `stats_task_log` 的**读路径**：`GET /api/admin/stats/task-logs`（权限 `stats:task-log:list`），
+  按 `taskName`（默认 `cart-recall`）/ `status` / 执行时间区间分页查询，
+  排序 `start_time DESC, id DESC`；日期用半开区间 `[startDate 00:00, endDate+1 00:00)`。
+  **独立 Controller，不挂在 recall 子域下** —— 这张表将来还要承载订单超时、Excel 清理等任务。
 - **spring-shop-web**：应用启动模块，含启动类、控制器、安全配置（前后台双过滤链）与配置文件，统一依赖所有业务模块。
 
 ### 新增业务模块约定
@@ -295,6 +300,8 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
 | 7001 | `STATS_RECALL_DATE_INVALID` 统计日期不合法，不可晚于今天 |
 | 7002 | `STATS_RECALL_PARAM_INVALID` 圈人参数不合法 |
 | 7003 | `STATS_RECALL_RUNNING` 圈人任务正在执行中，请稍后重试 |
+
+> 任务执行日志查询（`/api/admin/stats/task-logs`）是只读接口，**不需要新错误码**，`7004+` 仍空闲。
 
 ### 异步导入导出（Excel 任务框架，强约束）
 

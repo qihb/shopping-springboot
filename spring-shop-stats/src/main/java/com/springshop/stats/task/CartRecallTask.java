@@ -47,7 +47,13 @@ public class CartRecallTask {
 
     private static final Logger log = LoggerFactory.getLogger(CartRecallTask.class);
 
-    private static final String TASK_NAME = "cart-recall";
+    /**
+     * 任务名，同时是 {@code stats_task_log.task_name} 的写入值
+     *
+     * <p>公开为常量是为了让查询侧（{@code TaskLogQueryServiceImpl} 的默认过滤条件）直接引用它，
+     * 而不是各自再写一遍字面量 —— 两处字符串一旦不同步，默认查询会静默查不到任何记录。
+     */
+    public static final String TASK_NAME = "cart-recall";
 
     /** 锁 TTL：跑批远快于此，仅作为实例崩溃后的自动解锁兜底 */
     private static final Duration LOCK_TTL = Duration.ofHours(2);
