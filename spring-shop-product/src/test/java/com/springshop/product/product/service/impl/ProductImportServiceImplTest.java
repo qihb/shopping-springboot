@@ -17,10 +17,12 @@ import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.ResultCode;
 import com.springshop.product.category.entity.ProductCategory;
 import com.springshop.product.category.mapper.ProductCategoryMapper;
+import com.springshop.product.product.dto.OccupiedProductSpec;
 import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import com.springshop.product.product.service.InventoryService;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,6 +42,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -90,12 +93,18 @@ class ProductImportServiceImplTest {
     private ProductCategoryMapper categoryMapper;
 
     @Mock
+    private InventoryService inventoryService;
+
+    @Mock
     private ExcelTaskExecutor excelTaskExecutor;
 
     @Mock
     private ExcelTaskService taskService;
 
     private ExcelTaskProperties properties;
+
+    /** 最近一次 SKU 批量插入落库的对象（模拟按 sku_code 回查拿 id 的数据来源） */
+    private final List<ProductSku> persistedSkus = new ArrayList<>();
 
     private ProductImportServiceImpl importService;
 
@@ -113,7 +122,7 @@ class ProductImportServiceImplTest {
                 .thenReturn(new SimpleTransactionStatus());
 
         importService = new ProductImportServiceImpl(productMapper, productSkuMapper, categoryMapper,
-                excelTaskExecutor, properties, transactionManager);
+                inventoryService, excelTaskExecutor, properties, transactionManager);
     }
 
     /**
@@ -142,8 +151,8 @@ class ProductImportServiceImplTest {
         stubInsertAssignsId();
 
         runImport(List.of(
-                row("手机A", "SKU-A-001", "199.00", "10"),
-                row("手机A", "SKU-A-002", "299.00", "20")));
+                row("手机A", "SKU-A-001", "颜色:黑", "199.00", "10"),
+                row("手机A", "SKU-A-002", "颜色:白", "299.00", "20")));
 
         // 2 行都进了同一组，成功计数按 SKU 计
         assertEquals(2, context.getProcessedRows());
@@ -164,6 +173,11 @@ class ProductImportServiceImplTest {
         assertEquals(2, skus.size());
         assertTrue(skus.stream().allMatch(sku -> sku.getProductId().equals(100L)),
                 "SKU 的 productId 应由 insertBatch 回填的自增主键补齐");
+
+        // 每个新 SKU 都必须建库存行（初始量取自 Excel 的库存列），
+        // 否则该 SKU 下单时会被判为「库存不足」
+        verify(inventoryService).initStock(200L, 10);
+        verify(inventoryService).initStock(201L, 20);
     }
 
     @Test
@@ -239,56 +253,144 @@ class ProductImportServiceImplTest {
     }
 
     /**
-     * {@code product.name} 上没有唯一索引，「同名 + 换一批 SKU 编码」的重传会静默建出
-     * 第二个同名 SPU，运营在列表里看到两个一模一样的商品而事后无法合并。
-     * 导入必须严格拒绝，并把「导入不会覆盖」「该去哪里改」写进提示。
+     * 名称已存在 + <b>规格不同</b> → 复用现有 SPU，只追加 SKU，<b>不再整组拒绝</b>。
+     *
+     * <p>这是「同名不同规格 = 同一 SPU 下两个 SKU」在导入侧的落地：运营给已有商品补一个
+     * 新颜色时，不该被迫去后台逐条点，也不该被逼着换个名字建出第二个同名商品。
      */
     @Test
-    void importProducts_should_reject_product_name_that_already_exists() throws IOException {
+    void importProducts_shouldReuseExistingProduct_whenNameExistsAndSpecsDiffer() throws IOException {
         stubCategory();
-        when(productMapper.selectOccupiedProductNames(any())).thenReturn(List.of("手机A"));
+        stubInsertAssignsId();
+        // 库里已有「手机A」，已占用规格「颜色:黑」
+        when(productMapper.selectOccupiedProductSpecs(any())).thenReturn(List.of(
+                occupied(77L, "手机A", "颜色:黑")));
 
-        runImport(List.of(
-                row("手机A", "SKU-NEW-001", "199.00", "10"),
-                row("手机A", "SKU-NEW-002", "199.00", "10")));
+        runImport(List.of(row("手机A", "SKU-NEW-001", "颜色:白", "199.00", "10")));
 
-        assertEquals(0, context.getSuccessRows());
-        assertEquals(2, context.getFailRows(), "整组一起失败，运营才知道这两行属于同一个商品");
-        String message = errors().get(0).getMessage();
-        assertTrue(message.contains("手机A"), "实际: " + message);
-        assertTrue(message.contains("已存在"), "实际: " + message);
-        assertTrue(message.contains("不会覆盖"), "提示要说清导入不覆盖已有商品，实际: " + message);
+        assertEquals(1, context.getSuccessRows());
+        assertEquals(0, context.getFailRows());
+
+        // 关键：没有新建 SPU，SKU 挂到了既有 productId 上
+        verify(productMapper, never()).insertBatch(any());
+        ArgumentCaptor<List<ProductSku>> skuCaptor = skuListCaptor();
+        verify(productSkuMapper).insertBatch(skuCaptor.capture());
+        assertTrue(skuCaptor.getValue().stream().allMatch(sku -> sku.getProductId().equals(77L)),
+                "SKU 应挂到既有商品的 id 上");
+    }
+
+    /**
+     * 复用已有 SPU 时，商品级字段（分类 / 副标题 / 主图）一律忽略 —— 本次只追加 SKU，不改 SPU。
+     *
+     * <p>所以哪怕分类列填了个不存在的名字，也不该让「给已有商品补一个规格」失败：它压根不会被写入。
+     */
+    @Test
+    void importProducts_shouldIgnoreProductLevelFields_whenReusingExistingProduct() throws IOException {
+        stubCategory();
+        stubInsertAssignsId();
+        when(productMapper.selectOccupiedProductSpecs(any())).thenReturn(List.of(
+                occupied(77L, "手机A", "颜色:黑")));
+
+        runImport(List.of(List.of("手机A", "副标题", "https://example.com/a.jpg", "不存在的分类",
+                "SKU-NEW-001", "颜色:白", "199.00", "", "10", "1")));
+
+        assertEquals(1, context.getSuccessRows());
+        assertEquals(0, context.getFailRows());
         verify(productMapper, never()).insertBatch(any());
     }
 
     /**
-     * 重名校验要排在分类校验之前：商品名已存在时这次导入对这一组来说注定是空操作，
-     * 先报「分类不存在」会把运营引到无关的错处去改。
+     * 库里存在「SKU 全被逻辑删除、商品本身还在」的同名商品时，查重 SQL（LEFT JOIN）会返回
+     * {@code specs = null} 的行。那种商品没有占用任何规格，不能把新规格误判成重复，
+     * 也不能因此丢掉它的 {@code productId} —— 否则会再建一个同名 SPU，正是规则要消灭的现象。
      */
     @Test
-    void importProducts_should_report_name_conflict_before_category_conflict() throws IOException {
-        when(productMapper.selectOccupiedProductNames(any())).thenReturn(List.of("手机A"));
+    void importProducts_shouldReuseProductWithNoLiveSkus_insteadOfCreatingSecondSpu() throws IOException {
+        stubCategory();
+        stubInsertAssignsId();
+        when(productMapper.selectOccupiedProductSpecs(any())).thenReturn(List.of(
+                occupied(88L, "手机A", null)));
 
-        runImport(List.of(rowWithCategory("手机A", "不存在的分类", "SKU-NEW-001", "199.00", "10")));
+        runImport(List.of(row("手机A", "SKU-NEW-001", "颜色:黑", "199.00", "10")));
 
-        String message = errors().get(0).getMessage();
-        assertTrue(message.contains("已存在"), "实际: " + message);
-        assertFalse(message.contains("分类"), "不应把运营引到分类上去改，实际: " + message);
+        assertEquals(1, context.getSuccessRows());
+        assertEquals(0, context.getFailRows());
+        verify(productMapper, never()).insertBatch(any());
+        ArgumentCaptor<List<ProductSku>> skuCaptor = skuListCaptor();
+        verify(productSkuMapper).insertBatch(skuCaptor.capture());
+        assertTrue(skuCaptor.getValue().stream().allMatch(sku -> sku.getProductId().equals(88L)),
+                "应复用那个「没有存活 SKU」的同名商品，而不是再建一个同名 SPU");
     }
 
     /**
-     * 「严格拒绝」是按商品粒度拒绝，不是整份文件作废——其余商品照常导入，
-     * 这样一次重传里只有真正重复的那个商品会红。
+     * 名称已存在 + <b>规格相同</b> → 只拒绝<b>这一行</b>（不是整组、也不是整份文件）。
      */
     @Test
-    void importProducts_should_reject_only_the_duplicate_name_and_keep_the_rest() throws IOException {
+    void importProducts_shouldRejectRow_whenNameAndSpecsBothExist() throws IOException {
+        stubCategory();
+        // 该行注定被拒、不会有任何落库，所以不桩 insertBatch（否则是「无用桩」）
+        when(productMapper.selectOccupiedProductSpecs(any())).thenReturn(List.of(
+                occupied(77L, "手机A", "颜色:黑")));
+
+        runImport(List.of(row("手机A", "SKU-NEW-001", "颜色:黑", "199.00", "10")));
+
+        assertEquals(0, context.getSuccessRows());
+        assertEquals(1, context.getFailRows());
+        String message = errors().get(0).getMessage();
+        assertTrue(message.contains("手机A"), "实际: " + message);
+        assertTrue(message.contains("已存在"), "实际: " + message);
+        verify(productMapper, never()).insertBatch(any());
+    }
+
+    /**
+     * 规格比较前必须规范化：段序不同、全角冒号都必须被认成同一个规格。
+     *
+     * <p>不规范化的话，运营把「颜色:黑;尺寸:L」写成「尺寸:L；颜色：黑」就能绕开唯一性规则。
+     */
+    @Test
+    void importProducts_shouldTreatReorderedOrFullWidthSpecsAsDuplicate() throws IOException {
+        stubCategory();
+        when(productMapper.selectOccupiedProductSpecs(any())).thenReturn(List.of(
+                occupied(77L, "手机A", "颜色:黑;尺寸:L")));
+
+        runImport(List.of(row("手机A", "SKU-NEW-001", "尺寸:L；颜色：黑", "199.00", "10")));
+
+        assertEquals(0, context.getSuccessRows());
+        assertEquals(1, context.getFailRows());
+        assertTrue(errors().get(0).getMessage().contains("已存在"));
+    }
+
+    /**
+     * 逐行判定：同一个文件里重复的那一行红，其余行照常导入（商品级失败才连坐整组）。
+     */
+    @Test
+    void importProducts_shouldRejectOnlyTheDuplicateSpecAndKeepTheRest() throws IOException {
         stubCategory();
         stubInsertAssignsId();
-        when(productMapper.selectOccupiedProductNames(any())).thenReturn(List.of("手机A"));
+        when(productMapper.selectOccupiedProductSpecs(any())).thenReturn(List.of(
+                occupied(77L, "手机A", "颜色:黑")));
 
         runImport(List.of(
-                row("手机A", "SKU-DUP-1", "199.00", "10"),
-                row("手机B", "SKU-NEW-2", "299.00", "10")));
+                row("手机A", "SKU-DUP-1", "颜色:黑", "199.00", "10"),
+                row("手机A", "SKU-NEW-2", "颜色:白", "299.00", "10"),
+                row("手机B", "SKU-NEW-3", "颜色:黑", "399.00", "10")));
+
+        assertEquals(2, context.getSuccessRows());
+        assertEquals(1, context.getFailRows());
+        assertTrue(errors().get(0).getMessage().contains("已存在"));
+    }
+
+    /**
+     * 文件内同名同规格：第二行必须红 —— 否则同一个 SPU 下会出现两个一模一样的 SKU。
+     */
+    @Test
+    void importProducts_shouldRejectDuplicateSpecsInsideFile() throws IOException {
+        stubCategory();
+        stubInsertAssignsId();
+
+        runImport(List.of(
+                row("手机A", "SKU-A-001", "颜色:黑", "199.00", "10"),
+                row("手机A", "SKU-A-002", "颜色:黑", "299.00", "10")));
 
         assertEquals(1, context.getSuccessRows());
         assertEquals(1, context.getFailRows());
@@ -305,9 +407,9 @@ class ProductImportServiceImplTest {
         stubInsertAssignsId();
 
         runImport(List.of(
-                row("手机A", "SKU-A-001", "199.00", "10"),
-                row("手机A", "SKU-A-002", "299.00", "20"),
-                row("手机A", "SKU-A-003", "399.00", "30")));
+                row("手机A", "SKU-A-001", "颜色:黑", "199.00", "10"),
+                row("手机A", "SKU-A-002", "颜色:白", "299.00", "20"),
+                row("手机A", "SKU-A-003", "颜色:红", "399.00", "30")));
 
         assertEquals(3, context.getSuccessRows());
         assertEquals(0, context.getFailRows(), "文件内同名是「一个 SPU 三个 SKU」的正常写法");
@@ -477,12 +579,33 @@ class ProductImportServiceImplTest {
     }
 
     /**
-     * 模拟 {@code insertBatch} 的自增主键回填（真实实现靠
-     * {@code @Options(useGeneratedKeys = true)} 完成）
+     * 模拟落库：
+     * <ul>
+     *   <li>{@code productMapper.insertBatch} 会回填自增主键（真实实现靠
+     *       {@code @Options(useGeneratedKeys = true)}）；</li>
+     *   <li>SKU 的 {@code insertBatch} 是自定义 {@code @Insert}，<b>不回填主键</b>，
+     *       所以落库后还要按 {@code sku_code} 回查一次拿 id 才能建库存行 —— 这里让回查
+     *       返回刚插入的同一批对象（已赋 id），模拟真实行为。</li>
+     * </ul>
      */
     private void stubInsertAssignsId() {
-        when(productMapper.insertBatch(any())).thenAnswer(invocation -> assignProductIds(invocation.getArgument(0)));
-        when(productSkuMapper.insertBatch(any())).thenReturn(1);
+        // lenient：复用已有 SPU 的用例根本不会走 insertBatch(products)（这正是新语义要钉住的），
+        // 严格模式下会被判为「无用桩」
+        lenient().when(productMapper.insertBatch(any()))
+                .thenAnswer(invocation -> assignProductIds(invocation.getArgument(0)));
+        when(productSkuMapper.insertBatch(any())).thenAnswer(invocation -> {
+            List<ProductSku> skus = invocation.getArgument(0);
+            long nextId = 200L;
+            for (ProductSku sku : skus) {
+                sku.setId(nextId++);
+            }
+            persistedSkus.clear();
+            persistedSkus.addAll(skus);
+            return skus.size();
+        });
+        // lenient：只有真正走到落库的用例才会回查；校验阶段就失败的用例用不到这个桩
+        lenient().when(productSkuMapper.selectList(any()))
+                .thenAnswer(invocation -> List.copyOf(persistedSkus));
     }
 
     private int assignProductIds(List<Product> products) {
@@ -494,13 +617,28 @@ class ProductImportServiceImplTest {
     }
 
     private List<String> row(String productName, String skuCode, String price, String stock) {
+        return row(productName, skuCode, "颜色:黑", price, stock);
+    }
+
+    private List<String> row(String productName, String skuCode, String specs, String price, String stock) {
         return List.of(productName, "副标题", "https://example.com/a.jpg", CATEGORY_NAME,
-                skuCode, "颜色:黑", price, "", stock, "1");
+                skuCode, specs, price, "", stock, "1");
     }
 
     private List<String> rowWithCategory(String productName, String categoryName,
                                          String skuCode, String price, String stock) {
         return List.of(productName, "副标题", "https://example.com/a.jpg", categoryName,
                 skuCode, "颜色:黑", price, "", stock, "1");
+    }
+
+    /**
+     * 构造一条「库里已有」的 {@code (productId, 名称, 规格)}，模拟查重 SQL 的返回
+     */
+    private OccupiedProductSpec occupied(Long productId, String name, String specs) {
+        OccupiedProductSpec spec = new OccupiedProductSpec();
+        spec.setProductId(productId);
+        spec.setName(name);
+        spec.setSpecs(specs);
+        return spec;
     }
 }

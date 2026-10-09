@@ -17,6 +17,7 @@ import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import com.springshop.product.product.service.InventoryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -40,6 +41,10 @@ import java.util.stream.Collectors;
  * 购物车服务实现
  *
  * <p>依赖商品模块的 SKU/商品 Mapper 做只读校验与详情聚合，不反向写入商品数据。
+ *
+ * <p><b>库存口径（V9 起）</b>：可售量 = {@code inventory.stock - inventory.locked_stock}，
+ * 由 {@link InventoryService} 提供。<b>不读 {@code product_sku.stock}</b> ——
+ * 那个迁移期镜像列已由 V10 删除，库存的唯一来源是 {@code inventory}。
  *
  * <p><b>缓存设计（Redis 读加速，DB 为主存）</b>：
  * <ul>
@@ -71,15 +76,18 @@ public class CartServiceImpl implements CartService {
     private final CartItemMapper cartItemMapper;
     private final ProductSkuMapper productSkuMapper;
     private final ProductMapper productMapper;
+    private final InventoryService inventoryService;
     private final StringRedisTemplate stringRedisTemplate;
 
     public CartServiceImpl(CartItemMapper cartItemMapper,
                            ProductSkuMapper productSkuMapper,
                            ProductMapper productMapper,
+                           InventoryService inventoryService,
                            StringRedisTemplate stringRedisTemplate) {
         this.cartItemMapper = cartItemMapper;
         this.productSkuMapper = productSkuMapper;
         this.productMapper = productMapper;
+        this.inventoryService = inventoryService;
         this.stringRedisTemplate = stringRedisTemplate;
     }
 
@@ -87,11 +95,14 @@ public class CartServiceImpl implements CartService {
     public void add(Long userId, CartAddRequest request) {
         validateQuantity(request.getQuantity());
 
-        ProductSku sku = requireOnSaleSku(request.getSkuId());
+        // 先校验 SKU 在售（已停售 / 所属商品已下架直接拒绝），再取可售量
+        requireOnSaleSku(request.getSkuId());
+        // 可售量（在库 − 未付款订单锁定），只查一次供下面两个分支复用
+        int available = inventoryService.available(request.getSkuId());
 
         CartItem existing = findItem(userId, request.getSkuId());
         if (existing == null) {
-            if (sku.getStock() != null && request.getQuantity() > sku.getStock()) {
+            if (request.getQuantity() > available) {
                 throw new BusinessException(ResultCode.CART_STOCK_INSUFFICIENT);
             }
             CartItem item = new CartItem();
@@ -115,7 +126,7 @@ public class CartServiceImpl implements CartService {
 
         // 同 SKU 已存在则累加，并按加购语义自动勾选
         int targetQuantity = request.getQuantity() + existing.getQuantity();
-        if (sku.getStock() != null && targetQuantity > sku.getStock()) {
+        if (targetQuantity > available) {
             throw new BusinessException(ResultCode.CART_STOCK_INSUFFICIENT);
         }
         existing.setQuantity(targetQuantity);
@@ -267,12 +278,14 @@ public class CartServiceImpl implements CartService {
         // 批量查 SKU 与商品，避免逐条查询产生 N+1
         Map<Long, ProductSku> skuMap = collectSkus(items);
         Map<Long, Product> productMap = collectProducts(skuMap.values());
+        // 批量取可售量（在库 − 锁定）：一次查询，避免逐条查库存表
+        Map<Long, Integer> availableMap = inventoryService.availableMap(skuMap.keySet());
 
         int totalQuantity = 0;
         int checkedQuantity = 0;
         BigDecimal checkedAmount = BigDecimal.ZERO;
         for (CartItem item : items) {
-            CartItemVO itemVO = buildItemVO(item, skuMap, productMap);
+            CartItemVO itemVO = buildItemVO(item, skuMap, productMap, availableMap);
             itemVOs.add(itemVO);
 
             int quantity = item.getQuantity() == null ? 0 : item.getQuantity();
@@ -297,8 +310,8 @@ public class CartServiceImpl implements CartService {
         CartItem item = requireOwnedItem(userId, id);
 
         // 与加购保持一致的校验强度：失效 SKU / 下架商品不允许改数量
-        ProductSku sku = requireOnSaleSku(item.getSkuId());
-        if (sku.getStock() != null && request.getQuantity() > sku.getStock()) {
+        requireOnSaleSku(item.getSkuId());
+        if (request.getQuantity() > inventoryService.available(item.getSkuId())) {
             throw new BusinessException(ResultCode.CART_STOCK_INSUFFICIENT);
         }
         item.setQuantity(request.getQuantity());
@@ -459,7 +472,8 @@ public class CartServiceImpl implements CartService {
         return products.stream().collect(Collectors.toMap(Product::getId, product -> product));
     }
 
-    private CartItemVO buildItemVO(CartItem item, Map<Long, ProductSku> skuMap, Map<Long, Product> productMap) {
+    private CartItemVO buildItemVO(CartItem item, Map<Long, ProductSku> skuMap,
+                                   Map<Long, Product> productMap, Map<Long, Integer> availableMap) {
         CartItemVO vo = new CartItemVO();
         vo.setId(item.getId());
         vo.setSkuId(item.getSkuId());
@@ -477,7 +491,8 @@ public class CartServiceImpl implements CartService {
         vo.setSpecs(sku.getSpecs());
         vo.setPrice(sku.getPrice());
         vo.setOriginalPrice(sku.getOriginalPrice());
-        vo.setStock(sku.getStock());
+        // 对外暴露的是可售量而非在库量：未付款订单锁定的部分不该显示为「有货」
+        vo.setStock(availableMap.getOrDefault(sku.getId(), 0));
         if (product != null) {
             vo.setProductName(product.getName());
             vo.setProductImage(product.getMainImage());

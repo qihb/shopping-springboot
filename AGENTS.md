@@ -75,7 +75,14 @@ spring_shop/
   多端支持：请求头 `X-Client-Id`（`WEB`/`MINIAPP`/`APP`，缺省 `WEB`）经 `ClientIdFilter` 写入 `ClientContext`，
   登录时把 clientId 写入 JWT 的 `clientId` claim；小程序登录 `POST /api/auth/miniapp/login` 用 code 换 openid，
   首次登录自动建号（`user.openid` 唯一）。
-- **spring-shop-product**：商品业务模块（分类、SPU/SKU/图片、前后台商品读写、库存扣减），依赖 common。
+- **spring-shop-product**：商品业务模块（分类、SPU/SKU/图片、前后台商品读写、库存），依赖 common。
+  **库存以独立表 `inventory` 为准**（V9 起）：`stock` 在库实物量 / `locked_stock` 未付款订单锁定 /
+  `available = stock - locked_stock` 可售量（派生值，不落库）；`product_sku.stock` 这个迁移期镜像列
+  已由 **V10 删除**，实体上不再有库存字段。变更一律经 `InventoryService`（条件更新 + 同事务落 `inventory_log`），
+  保证「改了库存必有账」。详见 `docs/product-module.md`。
+  **唯一性口径**：唯一性单元是 `(商品名称, 规格)`（SKU 粒度，仅未删除记录），同名不同规格合法
+  （同一 SPU 下两个 SKU），同名同规格拒绝；`sku_code` 保留全局唯一（`uk_sku_code`），两套口径并存。
+  规格比较前必须过 `SkuSpecNormalizer`（分隔符统一 / 去空白 / 段排序 / 全角冒号归一）。
 - **spring-shop-cart**：购物车业务模块（加购、数量调整、勾选、删除），复用 product 的只读查询，依赖 common + product。
 - **spring-shop-order**：订单业务模块（收货地址、下单快照、条件扣库存、状态流转、后台发货），依赖 common + product + cart。
 - **spring-shop-pay**：支付业务模块（模拟支付、支付记录流水），复用 order 的订单查询与 markPaid 条件更新，依赖 common + order。
@@ -230,6 +237,8 @@ web 模块，并用 `@Order(HIGHEST_PRECEDENCE)` 抢在 common 的通用兜底 A
 | 2012 | `PRODUCT_SKU_CODE_DUPLICATE` SKU 编码重复 |
 | 2013 | `PRODUCT_SKU_EMPTY` 商品至少需要一个 SKU |
 | 2014 | `PRODUCT_OFF_SHELF` 商品已下架 |
+| 2015 | `PRODUCT_IDENTITY_DUPLICATE` 同名同规格的商品已存在 |
+| 2016 | `PRODUCT_NOT_OFF_SHELF` 商品未下架，不可删除 |
 | 2020 | `PRODUCT_IMPORT_FILE_INVALID` 导入文件不合法，请下载模板后重新填写 |
 
 **已占用的 3000 段（cart）**：

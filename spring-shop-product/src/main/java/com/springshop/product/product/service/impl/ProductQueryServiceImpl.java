@@ -19,6 +19,7 @@ import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductImageMapper;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import com.springshop.product.product.service.InventoryService;
 import com.springshop.product.product.service.ProductQueryService;
 import com.springshop.product.product.vo.ProductDetailVO;
 import com.springshop.product.product.vo.ProductImageVO;
@@ -64,6 +65,7 @@ public class ProductQueryServiceImpl implements ProductQueryService {
     private final ProductSkuMapper productSkuMapper;
     private final ProductImageMapper productImageMapper;
     private final ProductCategoryMapper categoryMapper;
+    private final InventoryService inventoryService;
     private final StringRedisTemplate stringRedisTemplate;
     private final ObjectMapper objectMapper;
 
@@ -71,12 +73,14 @@ public class ProductQueryServiceImpl implements ProductQueryService {
                                    ProductSkuMapper productSkuMapper,
                                    ProductImageMapper productImageMapper,
                                    ProductCategoryMapper categoryMapper,
+                                   InventoryService inventoryService,
                                    StringRedisTemplate stringRedisTemplate,
                                    ObjectMapper objectMapper) {
         this.productMapper = productMapper;
         this.productSkuMapper = productSkuMapper;
         this.productImageMapper = productImageMapper;
         this.categoryMapper = categoryMapper;
+        this.inventoryService = inventoryService;
         this.stringRedisTemplate = stringRedisTemplate;
         this.objectMapper = objectMapper;
     }
@@ -272,7 +276,12 @@ public class ProductQueryServiceImpl implements ProductQueryService {
 
         List<ProductSku> skus = productSkuMapper.selectList(new LambdaQueryWrapper<ProductSku>()
                 .eq(ProductSku::getProductId, product.getId()));
-        List<ProductSkuVO> skuVos = new ArrayList<>(skus.stream().map(this::toSkuVO).toList());
+        // 可售量取自库存表（在库 − 未付款订单锁定）。product_sku.stock 这个迁移期镜像列
+        // 已由 V10 删除，库存的唯一来源就是 inventory
+        Map<Long, Integer> availableMap = inventoryService.availableMap(
+                skus.stream().map(ProductSku::getId).toList());
+        List<ProductSkuVO> skuVos = new ArrayList<>(
+                skus.stream().map(sku -> toSkuVO(sku, availableMap)).toList());
         skuVos.sort(Comparator.comparing(ProductSkuVO::getPrice, Comparator.nullsLast(BigDecimal::compareTo)));
         vo.setSkus(skuVos);
         if (!skuVos.isEmpty()) {
@@ -286,14 +295,15 @@ public class ProductQueryServiceImpl implements ProductQueryService {
         return vo;
     }
 
-    private ProductSkuVO toSkuVO(ProductSku sku) {
+    private ProductSkuVO toSkuVO(ProductSku sku, Map<Long, Integer> availableMap) {
         ProductSkuVO vo = new ProductSkuVO();
         vo.setId(sku.getId());
         vo.setSkuCode(sku.getSkuCode());
         vo.setSpecs(sku.getSpecs());
         vo.setPrice(sku.getPrice());
         vo.setOriginalPrice(sku.getOriginalPrice());
-        vo.setStock(sku.getStock());
+        // 对外暴露可售量：未付款订单锁定的部分不该显示为「有货」
+        vo.setStock(availableMap.getOrDefault(sku.getId(), 0));
         vo.setStatus(sku.getStatus());
         return vo;
     }

@@ -11,6 +11,11 @@ import java.time.LocalDateTime;
 
 /**
  * 商品 SKU 实体
+ *
+ * <p><b>这里没有 {@code stock} 字段</b>：库存自 V9 起以独立表 {@code inventory} 为准，
+ * V10 已把迁移期镜像列 {@code product_sku.stock} 删除。要读写库存一律经
+ * {@code InventoryService}（在库量 / 未付款锁定量 / 可售量三分），
+ * 不要指望在这个实体上找到库存。
  */
 @TableName("product_sku")
 public class ProductSku {
@@ -27,8 +32,6 @@ public class ProductSku {
     private BigDecimal price;
 
     private BigDecimal originalPrice;
-
-    private Integer stock;
 
     private Integer status;
 
@@ -57,8 +60,6 @@ public class ProductSku {
     public void setPrice(BigDecimal price) { this.price = price; }
     public BigDecimal getOriginalPrice() { return originalPrice; }
     public void setOriginalPrice(BigDecimal originalPrice) { this.originalPrice = originalPrice; }
-    public Integer getStock() { return stock; }
-    public void setStock(Integer stock) { this.stock = stock; }
     public Integer getStatus() { return status; }
     public void setStatus(Integer status) { this.status = status; }
     public LocalDateTime getCreateTime() { return createTime; }

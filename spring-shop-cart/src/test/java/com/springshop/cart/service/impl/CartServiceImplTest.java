@@ -16,6 +16,7 @@ import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import com.springshop.product.product.service.InventoryService;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -68,6 +69,13 @@ class CartServiceImplTest {
     @Mock
     private ProductMapper productMapper;
 
+    /**
+     * 库存口径自 V9 起由 inventory 表提供：加购 / 改数量校验「可售量」、列表 VO 也读它，
+     * 因此本类不用 {@code product_sku.stock} 当库存依据（那列已由 V10 删除）。
+     */
+    @Mock
+    private InventoryService inventoryService;
+
     @Mock
     private StringRedisTemplate stringRedisTemplate;
 
@@ -99,9 +107,10 @@ class CartServiceImplTest {
 
     @Test
     void add_should_insert_when_sku_not_in_cart() {
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 5));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
         when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        when(inventoryService.available(10L)).thenReturn(5);
 
         cartService.add(USER_ID, addRequest(10L, 2));
 
@@ -116,9 +125,10 @@ class CartServiceImplTest {
 
     @Test
     void add_should_accumulate_and_check_when_sku_exists() {
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 10));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
         when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(cartItem(9L, 10L, 3, 0));
+        when(inventoryService.available(10L)).thenReturn(10);
 
         cartService.add(USER_ID, addRequest(10L, 2));
 
@@ -140,7 +150,7 @@ class CartServiceImplTest {
 
     @Test
     void add_should_fail_when_product_off_shelf() {
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 5));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 0));
 
         BusinessException ex = assertThrows(BusinessException.class,
@@ -150,7 +160,7 @@ class CartServiceImplTest {
 
     @Test
     void add_should_fail_when_sku_disabled() {
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 0, 5));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 0));
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> cartService.add(USER_ID, addRequest(10L, 1)));
@@ -159,9 +169,10 @@ class CartServiceImplTest {
 
     @Test
     void add_should_fail_when_stock_insufficient() {
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 3));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
         when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        when(inventoryService.available(10L)).thenReturn(3);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> cartService.add(USER_ID, addRequest(10L, 5)));
@@ -170,9 +181,10 @@ class CartServiceImplTest {
 
     @Test
     void add_should_fail_when_accumulated_quantity_exceeds_stock() {
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 4));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
         when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(cartItem(9L, 10L, 3, 1));
+        when(inventoryService.available(10L)).thenReturn(4);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> cartService.add(USER_ID, addRequest(10L, 2)));
@@ -181,7 +193,7 @@ class CartServiceImplTest {
 
     @Test
     void add_should_accumulate_when_concurrent_insert_conflicts() {
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 10));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
         // 首次查询为空 → 走 insert；insert 抛唯一键冲突后重查能拿到并发写入的行
         when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class)))
@@ -189,6 +201,7 @@ class CartServiceImplTest {
                 .thenReturn(cartItem(9L, 10L, 3, 0));
         when(cartItemMapper.insert(any(CartItem.class)))
                 .thenThrow(new DuplicateKeyException("uk_user_sku"));
+        when(inventoryService.available(10L)).thenReturn(10);
 
         cartService.add(USER_ID, addRequest(10L, 2));
 
@@ -217,8 +230,9 @@ class CartServiceImplTest {
     @Test
     void updateQuantity_should_fail_when_stock_insufficient() {
         when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 2));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
+        when(inventoryService.available(10L)).thenReturn(2);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> cartService.updateQuantity(USER_ID, 9L, quantityRequest(5)));
@@ -228,7 +242,7 @@ class CartServiceImplTest {
     @Test
     void updateQuantity_should_fail_when_sku_disabled() {
         when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 0, 10));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 0));
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> cartService.updateQuantity(USER_ID, 9L, quantityRequest(2)));
@@ -248,8 +262,9 @@ class CartServiceImplTest {
     @Test
     void updateQuantity_should_update_when_ok() {
         when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 10));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
+        when(inventoryService.available(10L)).thenReturn(10);
 
         cartService.updateQuantity(USER_ID, 9L, quantityRequest(4));
 
@@ -327,8 +342,8 @@ class CartServiceImplTest {
                 cartItem(2L, 12L, 1, 0)
         ));
         when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
-                skuWithPrice(10L, 100L, 1, 10, "10.00"),
-                skuWithPrice(12L, 100L, 0, 10, "8.00")
+                skuWithPrice(10L, 100L, 1, "10.00"),
+                skuWithPrice(12L, 100L, 0, "8.00")
         ));
         when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
 
@@ -386,11 +401,13 @@ class CartServiceImplTest {
                 cartItem(3L, 12L, 3, 1)
         ));
         when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
-                skuWithPrice(10L, 100L, 1, 10, "10.00"),
-                skuWithPrice(11L, 100L, 1, 10, "5.00"),
-                skuWithPrice(12L, 100L, 0, 10, "8.00")
+                skuWithPrice(10L, 100L, 1, "10.00"),
+                skuWithPrice(11L, 100L, 1, "5.00"),
+                skuWithPrice(12L, 100L, 0, "8.00")
         ));
         when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
+        // 列表 VO 暴露的是「可售量」（inventory: 在库 − 锁定）；product_sku 上已无库存列
+        when(inventoryService.availableMap(any())).thenReturn(Map.of(10L, 7, 11L, 10, 12L, 0));
 
         CartVO vo = cartService.list(USER_ID);
 
@@ -403,6 +420,7 @@ class CartServiceImplTest {
         assertEquals("测试商品", first.getProductName());
         assertEquals(0, new BigDecimal("20.00").compareTo(first.getSubtotal()));
         assertFalse(first.getInvalid());
+        assertEquals(7, first.getStock());
 
         CartItemVO third = vo.getItems().get(2);
         assertTrue(third.getInvalid());
@@ -434,8 +452,8 @@ class CartServiceImplTest {
                 "11", "8|1|0"
         ));
         when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
-                skuWithPrice(10L, 100L, 1, 10, "10.00"),
-                skuWithPrice(11L, 100L, 1, 10, "5.00")
+                skuWithPrice(10L, 100L, 1, "10.00"),
+                skuWithPrice(11L, 100L, 1, "5.00")
         ));
         when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
 
@@ -472,7 +490,7 @@ class CartServiceImplTest {
                 cartItem(9L, 10L, 2, 1)
         ));
         when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
-                skuWithPrice(10L, 100L, 1, 10, "10.00")
+                skuWithPrice(10L, 100L, 1, "10.00")
         ));
         when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
 
@@ -496,7 +514,7 @@ class CartServiceImplTest {
                 cartItem(9L, 10L, 2, 1)
         ));
         when(productSkuMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
-                skuWithPrice(10L, 100L, 1, 10, "10.00")
+                skuWithPrice(10L, 100L, 1, "10.00")
         ));
         when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(product(100L, 1)));
 
@@ -511,7 +529,7 @@ class CartServiceImplTest {
 
     @Test
     void add_should_sync_redis_field_after_db_insert() {
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 5));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
         when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
         // 模拟 MyBatis-Plus insert 后回填自增主键
@@ -519,6 +537,7 @@ class CartServiceImplTest {
             invocation.getArgument(0, CartItem.class).setId(9L);
             return 1;
         });
+        when(inventoryService.available(10L)).thenReturn(5);
 
         cartService.add(USER_ID, addRequest(10L, 2));
 
@@ -529,9 +548,10 @@ class CartServiceImplTest {
     @Test
     void add_should_not_touch_redis_when_db_write_never_happens() {
         // 库存不足在 DB 写之前即抛异常，不应有任何缓存同步
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 3));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
         when(cartItemMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        when(inventoryService.available(10L)).thenReturn(3);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> cartService.add(USER_ID, addRequest(10L, 5)));
@@ -543,8 +563,9 @@ class CartServiceImplTest {
     @Test
     void updateQuantity_should_sync_redis_field_after_db_update() {
         when(cartItemMapper.selectById(9L)).thenReturn(cartItem(9L, 10L, 1, 1));
-        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1, 10));
+        when(productSkuMapper.selectById(10L)).thenReturn(sku(10L, 100L, 1));
         when(productMapper.selectById(100L)).thenReturn(product(100L, 1));
+        when(inventoryService.available(10L)).thenReturn(10);
 
         cartService.updateQuantity(USER_ID, 9L, quantityRequest(4));
 
@@ -644,16 +665,21 @@ class CartServiceImplTest {
         return item;
     }
 
-    private ProductSku sku(Long id, Long productId, Integer status, Integer stock) {
-        return skuWithPrice(id, productId, status, stock, "10.00");
+    private ProductSku sku(Long id, Long productId, Integer status) {
+        return skuWithPrice(id, productId, status, "10.00");
     }
 
-    private ProductSku skuWithPrice(Long id, Long productId, Integer status, Integer stock, String price) {
+    /**
+     * 造一个 ProductSku 桩对象
+     *
+     * <p>刻意没有库存参数：{@code ProductSku} 自 V10 起已无库存字段（镜像列已删），
+     * 可售量由 {@code inventoryService.available(...)} 提供，测试里要单独 stub 它。
+     */
+    private ProductSku skuWithPrice(Long id, Long productId, Integer status, String price) {
         ProductSku sku = new ProductSku();
         sku.setId(id);
         sku.setProductId(productId);
         sku.setStatus(status);
-        sku.setStock(stock);
         sku.setPrice(new BigDecimal(price));
         sku.setSpecs("规格" + id);
         return sku;

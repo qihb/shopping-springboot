@@ -17,6 +17,7 @@ import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductImageMapper;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import com.springshop.product.product.service.InventoryService;
 import com.springshop.product.product.service.ProductQueryService;
 import com.springshop.product.product.vo.ProductDetailVO;
 import com.springshop.product.product.vo.ProductListVO;
@@ -65,6 +66,9 @@ class ProductQueryServiceImplTest {
 
     @Mock
     private ProductCategoryMapper categoryMapper;
+
+    @Mock
+    private InventoryService inventoryService;
 
     @Mock
     private StringRedisTemplate stringRedisTemplate;

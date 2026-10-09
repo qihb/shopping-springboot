@@ -25,6 +25,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -95,6 +96,16 @@ public class AdminProductController {
     public Result<Void> update(@Parameter(description = "商品 id") @PathVariable Long id,
                                @Valid @RequestBody ProductSaveRequest request) {
         productManageService.update(id, request);
+        return Result.success();
+    }
+
+    @Operation(summary = "删除商品",
+            description = "逻辑删除，仅下架商品可删；连带逻辑删除其全部 SKU 与图片")
+    @ApiResponse(responseCode = "200", description = "删除成功，无返回数据")
+    @PreAuthorize("hasAuthority('product:product:delete')")
+    @DeleteMapping("/{id}")
+    public Result<Void> delete(@Parameter(description = "商品 id") @PathVariable Long id) {
+        productManageService.delete(id);
         return Result.success();
     }
 

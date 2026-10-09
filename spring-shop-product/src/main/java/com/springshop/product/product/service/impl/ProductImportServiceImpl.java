@@ -1,5 +1,6 @@
 package com.springshop.product.product.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.springshop.common.excel.ExcelFileType;
 import com.springshop.common.excel.ExcelReadException;
 import com.springshop.common.excel.ExcelReadOptions;
@@ -14,11 +15,14 @@ import com.springshop.common.exception.BusinessException;
 import com.springshop.common.result.ResultCode;
 import com.springshop.product.category.entity.ProductCategory;
 import com.springshop.product.category.mapper.ProductCategoryMapper;
+import com.springshop.product.product.dto.OccupiedProductSpec;
 import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import com.springshop.product.product.service.InventoryService;
 import com.springshop.product.product.service.ProductImportService;
+import com.springshop.product.product.support.SkuSpecNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -30,6 +34,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,13 +48,27 @@ import java.util.stream.Collectors;
  * <p><b>模板结构</b>：一行一个 SKU，商品级字段（名称 / 副标题 / 主图 / 分类）在同一个商品的
  * 多行里重复填写；解析时按「商品名称」聚合，同名多行合并为一个 SPU + 多个 SKU。
  *
- * <p><b>校验顺序</b>：先做组级校验（商品名是否已存在、分类），再做行级校验（SKU 字段）。
+ * <p><b>校验顺序</b>：先做组级校验（分类、商品级字段长度），再做行级校验（SKU 字段）。
  * 组级失败会让该商品的所有行一起失败——因为缺少分类的商品没有任何一行能落库。
  *
- * <p><b>重名商品严格拒绝</b>：{@code product.name} 上<b>没有唯一索引</b>，所以「同名 + 换一批
- * SKU 编码」这种重传会静默地建出第二个同名 SPU，运营在商品列表里看到两个一模一样的商品，
- * 而订单、购物车、统计各自挂在其中一个上，事后无法合并。因此导入对已存在的商品名一律拒绝，
- * <b>不覆盖、不新增</b>，并把「该改哪里」写进提示。
+ * <p><b>唯一性按 {@code (商品名称, 规格)} 逐行判定（2026-10-09 起）</b>：
+ * <ul>
+ *   <li><b>名称在库里不存在</b> → 新建 SPU，本组所有合法行作为它的 SKU；</li>
+ *   <li><b>名称已存在 + 规格不同</b> → <b>复用现有 {@code productId}，只追加 SKU，不新建 SPU</b>
+ *       （这正是「同名不同规格 = 同一 SPU 下两个 SKU」在导入侧的落地）；</li>
+ *   <li><b>名称已存在 + 规格相同</b> → 只拒绝<b>这一行</b>，同组其他规格的行照常导入。</li>
+ * </ul>
+ * 规格一律过 {@link SkuSpecNormalizer} 再比，否则段序 / 全角符号 / 空格都能把重复绕过去。
+ *
+ * <p><b>为什么不沿用「按名称整组拒绝」</b>：{@code product.name} 上没有唯一索引，
+ * 「同名 + 换一批 SKU 编码」的重传确实会静默建出第二个同名 SPU（运营看到两个一模一样的
+ * 商品，订单 / 购物车 / 统计各挂一个，事后无法合并）。但整组拒绝把「给已有商品补一个规格」
+ * 这个完全正当的诉求也一并堵死了。现在改为按 {@code (名称, 规格)} 逐行判定，
+ * 既拦住真正的重复，又放行合法的追加。
+ *
+ * <p><b>复用 SPU 时商品级字段（分类 / 副标题 / 主图）一律忽略</b>：这三列描述的是 SPU，
+ * 而本次只往既有 SPU 追加 SKU、不去改它。所以复用分支既不解析分类、也不写这三个字段 ——
+ * 顺手写入等于「悄悄改了别人的商品」，比忽略更危险。
  *
  * <p>这是应用层的兜底校验，不是数据库约束：查重与落库之间仍有极窄的窗口，
  * 两个导入任务同时导入同一个新商品名时仍可能各建一个 SPU。要真正堵死需要给
@@ -130,6 +149,7 @@ public class ProductImportServiceImpl implements ProductImportService {
     private final ProductMapper productMapper;
     private final ProductSkuMapper productSkuMapper;
     private final ProductCategoryMapper categoryMapper;
+    private final InventoryService inventoryService;
     private final ExcelTaskExecutor excelTaskExecutor;
     private final ExcelTaskProperties excelTaskProperties;
     private final TransactionTemplate transactionTemplate;
@@ -137,12 +157,14 @@ public class ProductImportServiceImpl implements ProductImportService {
     public ProductImportServiceImpl(ProductMapper productMapper,
                                     ProductSkuMapper productSkuMapper,
                                     ProductCategoryMapper categoryMapper,
+                                    InventoryService inventoryService,
                                     ExcelTaskExecutor excelTaskExecutor,
                                     ExcelTaskProperties excelTaskProperties,
                                     PlatformTransactionManager transactionManager) {
         this.productMapper = productMapper;
         this.productSkuMapper = productSkuMapper;
         this.categoryMapper = categoryMapper;
+        this.inventoryService = inventoryService;
         this.excelTaskExecutor = excelTaskExecutor;
         this.excelTaskProperties = excelTaskProperties;
         // 用 TransactionTemplate 而不是 @Transactional：执行体是异步线程里的一次普通方法调用，
@@ -175,7 +197,7 @@ public class ProductImportServiceImpl implements ProductImportService {
         List<ExcelRow> rows = readRows(context);
         Map<String, List<ProductCategory>> categoriesByName = loadCategoriesByName();
         Set<String> occupiedSkuCodes = loadOccupiedSkuCodes(rows);
-        Set<String> occupiedProductNames = loadOccupiedProductNames(rows);
+        Map<String, ExistingProduct> existingProducts = loadExistingProducts(rows);
 
         // 按名称聚合；名称为空或超长的行在这里就被记为失败，不进入分组
         List<ImportError> groupErrors = new ArrayList<>();
@@ -194,7 +216,7 @@ public class ProductImportServiceImpl implements ProductImportService {
         for (Map.Entry<String, List<ExcelRow>> entry : groups.entrySet()) {
             List<ExcelRow> groupRows = entry.getValue();
             ProductGroup group = buildGroup(entry.getKey(), groupRows, categoriesByName,
-                    occupiedProductNames, occupiedSkuCodes, importedSkuCodes, recorder);
+                    existingProducts, occupiedSkuCodes, importedSkuCodes, recorder);
             recorder.advance(groupRows.size());
             if (group != null) {
                 pending.add(group);
@@ -236,68 +258,116 @@ public class ProductImportServiceImpl implements ProductImportService {
                 recorder.successSkus(group.skus().size());
             } catch (Exception e) {
                 // 这一组没落库，它占用的 SKU 编码要释放，否则后续同编码的合法行会被误判为重复
-                group.skus().forEach(sku -> importedSkuCodes.remove(sku.getSkuCode()));
+                group.skus().forEach(draft -> importedSkuCodes.remove(draft.sku().getSkuCode()));
                 recorder.groupError(group.rows(), "落库失败：" + rootMessage(e));
             }
         }
     }
 
+    /**
+     * 落一批商品：批内一个事务
+     *
+     * <p>复用既有 SPU 的组不参与 {@code insertBatch(products)}，只把 SKU 挂到已有的
+     * {@code productId} 上 —— 这正是「同名不同规格只追加 SKU」的落地点。
+     */
     private void persistGroups(List<ProductGroup> groups) {
-        List<Product> products = groups.stream().map(ProductGroup::product).toList();
-        productMapper.insertBatch(products);
+        List<Product> newProducts = groups.stream()
+                .filter(group -> group.product() != null)
+                .map(ProductGroup::product)
+                .toList();
+        if (!newProducts.isEmpty()) {
+            productMapper.insertBatch(newProducts);
+        }
 
         List<ProductSku> skus = new ArrayList<>();
+        // SKU 表自 V10 起已无库存字段（迁移期镜像列已删），所以每行想要的目标库存
+        // 不能再挂在实体上，改为单独带着走，落库后建库存行时按 sku_code 取回
+        Map<String, Integer> stockBySkuCode = new HashMap<>();
         for (ProductGroup group : groups) {
-            for (ProductSku sku : group.skus()) {
-                // insertBatch 会把自增主键回填到 product 上，这里据此补 productId
-                sku.setProductId(group.product().getId());
+            // 新建组用 insertBatch 回填的自增主键；复用组用库里既有的 productId
+            Long productId = group.product() != null ? group.product().getId() : group.existingProductId();
+            for (SkuDraft draft : group.skus()) {
+                ProductSku sku = draft.sku();
+                sku.setProductId(productId);
                 skus.add(sku);
+                stockBySkuCode.put(sku.getSkuCode(), draft.stock());
             }
         }
         productSkuMapper.insertBatch(skus);
+
+        // 库存以 inventory 表为准。SKU 的批量插入是自定义 @Insert，<b>不会回填自增主键</b>，
+        // 所以按 sku_code 回查一次拿到 id，再逐个建库存行（initStock 同时会落一条初始化流水）
+        List<String> skuCodes = skus.stream().map(ProductSku::getSkuCode).toList();
+        Map<String, Long> skuIdByCode = productSkuMapper.selectList(
+                        new LambdaQueryWrapper<ProductSku>().in(ProductSku::getSkuCode, skuCodes))
+                .stream()
+                .collect(Collectors.toMap(ProductSku::getSkuCode, ProductSku::getId));
+        for (ProductSku sku : skus) {
+            Long skuId = skuIdByCode.get(sku.getSkuCode());
+            if (skuId != null) {
+                inventoryService.initStock(skuId, stockBySkuCode.getOrDefault(sku.getSkuCode(), 0));
+            }
+        }
     }
 
     /**
      * 构建单个商品：组级校验 → 行级校验 → 组装 SPU 与 SKU（不落库）
      *
-     * @return 校验通过的商品；返回 null 表示该商品未通过组级校验（失败原因已记录）
+     * <p>名称已存在时走「复用」分支：不建 SPU、不碰商品级字段，只把本组里规格尚未被占用的行
+     * 作为新 SKU 追加到既有 {@code productId} 上。
+     *
+     * @return 校验通过的商品；返回 null 表示该组没有任何一行能落库（失败原因已记录）
      */
     private ProductGroup buildGroup(String productName, List<ExcelRow> groupRows,
                                     Map<String, List<ProductCategory>> categoriesByName,
-                                    Set<String> occupiedProductNames, Set<String> occupiedSkuCodes,
-                                    Set<String> importedSkuCodes,
+                                    Map<String, ExistingProduct> existingProducts,
+                                    Set<String> occupiedSkuCodes, Set<String> importedSkuCodes,
                                     ImportRecorder recorder) {
-        if (occupiedProductNames.contains(productName)) {
-            // 放在分类校验之前：商品名已存在时这次导入对这一组来说注定是空操作，
-            // 先报「分类不存在」会把用户引到无关的错处去改
-            recorder.groupError(groupRows, "商品名称「" + productName + "」已存在，导入不会覆盖已有商品。"
-                    + "请改用其他名称，或到商品管理中直接编辑该商品");
-            return null;
+        ExistingProduct existing = existingProducts.get(productName);
+        boolean reuse = existing != null;
+
+        Long categoryId = null;
+        String subtitle = null;
+        String mainImage = null;
+        if (!reuse) {
+            // 分类 / 副标题 / 主图都是 SPU 级字段，只有新建 SPU 时才需要（也才有意义）。
+            // 复用分支不去改既有 SPU，因此既不校验也不写入 —— 详见类注释
+            categoryId = resolveCategoryId(productName, groupRows, categoriesByName, recorder);
+            if (categoryId == null) {
+                return null;
+            }
+            subtitle = firstNonBlank(groupRows, COL_SUBTITLE);
+            mainImage = firstNonBlank(groupRows, COL_MAIN_IMAGE);
+            String lengthError = checkGroupTextLength(subtitle, mainImage);
+            if (lengthError != null) {
+                recorder.groupError(groupRows, lengthError);
+                return null;
+            }
         }
-        Long categoryId = resolveCategoryId(productName, groupRows, categoriesByName, recorder);
-        if (categoryId == null) {
-            return null;
-        }
-        String subtitle = firstNonBlank(groupRows, COL_SUBTITLE);
-        String mainImage = firstNonBlank(groupRows, COL_MAIN_IMAGE);
-        String lengthError = checkGroupTextLength(subtitle, mainImage);
-        if (lengthError != null) {
-            recorder.groupError(groupRows, lengthError);
-            return null;
+
+        // 该名称下已被占用的规格 = 库里已有的 + 本组前面已经吃下的行。
+        // 组是按名称切的，所以这个集合天然只属于这一个名称，不需要跨组共享
+        Set<String> claimedSpecs = new HashSet<>();
+        if (reuse) {
+            claimedSpecs.addAll(existing.occupiedSpecs());
         }
 
         // 先把组内所有合法行构建成 SKU，再决定是否创建 SPU：
         // 避免出现「SPU 已创建但一个 SKU 都没有」的空商品
-        List<ProductSku> skus = new ArrayList<>();
+        List<SkuDraft> skus = new ArrayList<>();
         for (ExcelRow row : groupRows) {
             try {
-                skus.add(buildSku(row, occupiedSkuCodes, importedSkuCodes));
+                skus.add(buildSku(productName, row, claimedSpecs, occupiedSkuCodes, importedSkuCodes));
             } catch (IllegalArgumentException e) {
                 recorder.error(row.getRowNum(), e.getMessage());
             }
         }
         if (skus.isEmpty()) {
             return null;
+        }
+
+        if (reuse) {
+            return ProductGroup.reuse(existing.productId(), skus, groupRows);
         }
 
         Product product = new Product();
@@ -307,8 +377,8 @@ public class ProductImportServiceImpl implements ProductImportService {
         product.setMainImage(mainImage);
         product.setSales(0);
         // 商品上架状态取组内第一条成功导入的 SKU 的状态，模板中已注明「同一商品以第一行为准」
-        product.setStatus(skus.get(0).getStatus());
-        return new ProductGroup(product, skus, groupRows);
+        product.setStatus(skus.get(0).sku().getStatus());
+        return ProductGroup.create(product, skus, groupRows);
     }
 
     /**
@@ -349,8 +419,14 @@ public class ProductImportServiceImpl implements ProductImportService {
 
     /**
      * 构建单个 SKU；字段不合法时抛出 {@link IllegalArgumentException}，由调用方收集为该行的错误
+     *
+     * <p>返回 {@link SkuDraft}（实体 + 该行想要的目标库存）而不是裸实体 ——
+     * SKU 表自 V10 起没有库存字段，库存只能随草稿一起往下传，落库后再建 {@code inventory} 行。
+     *
+     * @param claimedSpecs 该商品名称下已被占用的<b>规范化规格</b>（库里已有的 + 本组前面已成功的行）
      */
-    private ProductSku buildSku(ExcelRow row, Set<String> occupiedSkuCodes, Set<String> importedSkuCodes) {
+    private SkuDraft buildSku(String productName, ExcelRow row, Set<String> claimedSpecs,
+                              Set<String> occupiedSkuCodes, Set<String> importedSkuCodes) {
         String skuCode = row.cell(COL_SKU_CODE);
         if (ExcelSupport.isBlankText(skuCode)) {
             throw new IllegalArgumentException("SKU 编码不能为空");
@@ -368,20 +444,34 @@ public class ProductImportServiceImpl implements ProductImportService {
         Integer stock = parseStock(row.cell(COL_STOCK));
         Integer status = parseStatus(row.cell(COL_STATUS));
 
-        // 所有字段都校验通过后才占用 SKU 编码：
-        // 否则「因价格写错而失败的行」会把编码锁死，后面同编码的合法行被误报为重复
-        if (occupiedSkuCodes.contains(skuCode) || !importedSkuCodes.add(skuCode)) {
+        // 「占用」放在所有纯校验之后：否则「因价格写错而失败的行」会把编码 / 规格锁死，
+        // 后面同值的合法行被误报为重复
+        String normalizedSpecs = SkuSpecNormalizer.normalize(specs);
+        if (occupiedSkuCodes.contains(skuCode) || importedSkuCodes.contains(skuCode)) {
             throw new IllegalArgumentException("SKU 编码「" + skuCode + "」已存在");
         }
+        if (claimedSpecs.contains(normalizedSpecs)) {
+            throw new IllegalArgumentException("商品「" + productName + "」的规格「"
+                    + displaySpecs(specs) + "」已存在，同名同规格不可重复；如要追加规格请换一个规格值");
+        }
+        importedSkuCodes.add(skuCode);
+        claimedSpecs.add(normalizedSpecs);
 
         ProductSku sku = new ProductSku();
         sku.setSkuCode(skuCode);
         sku.setSpecs(ExcelSupport.isBlankText(specs) ? null : specs);
         sku.setPrice(price);
         sku.setOriginalPrice(originalPrice);
-        sku.setStock(stock);
         sku.setStatus(status);
-        return sku;
+        // 库存不落在实体上：新增时留空视为 0（与 ProductManageServiceImpl.insertSku 同口径）
+        return new SkuDraft(sku, stock == null ? 0 : stock);
+    }
+
+    /**
+     * 规格为空时给一个可读的占位，避免错误提示里出现空白
+     */
+    private String displaySpecs(String specs) {
+        return ExcelSupport.isBlankText(specs) ? "（无规格）" : specs;
     }
 
     private BigDecimal parsePrice(String text, String fieldName) {
@@ -509,31 +599,54 @@ public class ProductImportServiceImpl implements ProductImportService {
     }
 
     /**
-     * 批量查询已存在的商品名称（未删除的），供「同名商品严格拒绝」使用
+     * 批量查询本文件里出现过的商品名称在库中是否已存在，以及各自已占用的规格
      *
-     * <p>分批查而不是每个分组查一次：一万个商品就是一万次往返，是本场景主要的耗时来源。
+     * <p>分片查而不是每个分组查一次：一万个商品就是一万次往返，是本场景主要的耗时来源。
+     *
+     * <p>同名对应多个 {@code productId} 时（历史脏数据）只认第一条：新规则要求
+     * 「同名不同规格复用同一个 SPU」，已有两个同名 SPU 时只能任选一个追加，无法自动合并。
      */
-    private Set<String> loadOccupiedProductNames(List<ExcelRow> rows) {
+    private Map<String, ExistingProduct> loadExistingProducts(List<ExcelRow> rows) {
         Set<String> names = rows.stream()
                 .map(row -> row.cell(COL_PRODUCT_NAME))
                 .filter(name -> !ExcelSupport.isBlankText(name))
                 .collect(Collectors.toSet());
         if (names.isEmpty()) {
-            return Set.of();
+            return Map.of();
         }
-        Set<String> occupied = new HashSet<>();
+
+        Map<String, Long> productIdByName = new LinkedHashMap<>();
+        Map<String, Set<String>> occupiedSpecsByName = new HashMap<>();
         List<String> chunk = new ArrayList<>(QUERY_CHUNK);
         for (String name : names) {
             chunk.add(name);
             if (chunk.size() >= QUERY_CHUNK) {
-                occupied.addAll(productMapper.selectOccupiedProductNames(chunk));
+                collectExistingProducts(chunk, productIdByName, occupiedSpecsByName);
                 chunk.clear();
             }
         }
         if (!chunk.isEmpty()) {
-            occupied.addAll(productMapper.selectOccupiedProductNames(chunk));
+            collectExistingProducts(chunk, productIdByName, occupiedSpecsByName);
         }
-        return occupied;
+
+        Map<String, ExistingProduct> result = new LinkedHashMap<>();
+        productIdByName.forEach((name, productId) -> result.put(name,
+                new ExistingProduct(productId, occupiedSpecsByName.getOrDefault(name, Set.of()))));
+        return result;
+    }
+
+    private void collectExistingProducts(List<String> names,
+                                         Map<String, Long> productIdByName,
+                                         Map<String, Set<String>> occupiedSpecsByName) {
+        for (OccupiedProductSpec row : productMapper.selectOccupiedProductSpecs(names)) {
+            productIdByName.putIfAbsent(row.getName(), row.getProductId());
+            // 查重 SQL 是 LEFT JOIN：商品存在但 SKU 全被逻辑删除时会返回 specs = null 的行，
+            // 那种商品没有占用任何规格，不能记进占用集合
+            if (row.getSpecs() != null) {
+                occupiedSpecsByName.computeIfAbsent(row.getName(), key -> new HashSet<>())
+                        .add(SkuSpecNormalizer.normalize(row.getSpecs()));
+            }
+        }
     }
 
     private List<ExcelRow> readRows(ExcelTaskContext context) {
@@ -576,12 +689,40 @@ public class ProductImportServiceImpl implements ProductImportService {
     }
 
     /**
-     * 一个待落库的商品（SPU + 若干 SKU + 来源行）
+     * 一个待落库的商品
+     *
+     * <p>两种形态二选一：{@link #create}（新建 SPU，落库时 {@code insertBatch}）或
+     * {@link #reuse}（复用已有 SPU，只追加 SKU、不建 SPU）。用工厂方法而不是两个可空字段的
+     * 裸构造器，避免出现「两个都给了」或「两个都没给」的非法状态。
      *
      * <p>保留来源行是为了在落库失败时把原因铺到组内每一行——
      * 只报「第 N 行」而运营不知道同组还有哪些行一起失败了。
      */
-    private record ProductGroup(Product product, List<ProductSku> skus, List<ExcelRow> rows) {
+    private record ProductGroup(Product product, Long existingProductId, List<SkuDraft> skus, List<ExcelRow> rows) {
+
+        static ProductGroup create(Product product, List<SkuDraft> skus, List<ExcelRow> rows) {
+            return new ProductGroup(product, null, skus, rows);
+        }
+
+        static ProductGroup reuse(Long existingProductId, List<SkuDraft> skus, List<ExcelRow> rows) {
+            return new ProductGroup(null, existingProductId, skus, rows);
+        }
+    }
+
+    /**
+     * 一个待落库的 SKU：实体 + 该行想要的目标库存
+     *
+     * <p>为什么要多带一个 {@code stock}：{@code product_sku} 表自 V10 起没有库存列，
+     * 库存只存在于 {@code inventory} 表；而建库存行必须在 SKU 落库拿到 id <b>之后</b>
+     * （自定义批量插入不回填主键，得按 sku_code 回查）。中间这段路没有别的地方能存这个值。
+     */
+    private record SkuDraft(ProductSku sku, int stock) {
+    }
+
+    /**
+     * 库里已有的一个商品：{@code productId} + 它已占用的<b>规范化规格</b>集合
+     */
+    private record ExistingProduct(Long productId, Set<String> occupiedSpecs) {
     }
 
     /**

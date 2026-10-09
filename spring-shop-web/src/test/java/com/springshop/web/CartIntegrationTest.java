@@ -2,8 +2,10 @@ package com.springshop.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.springshop.product.product.entity.Inventory;
 import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
+import com.springshop.product.product.mapper.InventoryMapper;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,6 +59,9 @@ class CartIntegrationTest {
 
     @Autowired
     private ProductSkuMapper productSkuMapper;
+
+    @Autowired
+    private InventoryMapper inventoryMapper;
 
     @MockBean
     private StringRedisTemplate stringRedisTemplate;
@@ -268,7 +273,10 @@ class CartIntegrationTest {
     }
 
     /**
-     * 构造一个商品 + SKU，返回 SKU id
+     * 构造一个商品 + SKU，并初始化库存行，返回 SKU id
+     *
+     * <p>V9 起加购的可售量校验读 {@code inventory}（在库 − 锁定），
+     * 手工插 SKU 不走商品创建路径，必须自己补库存行，否则可售量为 0 加不进购物车。
      */
     private Long createSku(int productStatus, int skuStatus, int stock) {
         Product product = new Product();
@@ -281,9 +289,15 @@ class CartIntegrationTest {
         sku.setProductId(product.getId());
         sku.setSkuCode("SKU-" + System.nanoTime());
         sku.setPrice(new BigDecimal("10.00"));
-        sku.setStock(stock);
         sku.setStatus(skuStatus);
         productSkuMapper.insert(sku);
+
+        Inventory inventory = new Inventory();
+        inventory.setSkuId(sku.getId());
+        inventory.setStock(stock);
+        inventory.setLockedStock(0);
+        inventoryMapper.insert(inventory);
+
         return sku.getId();
     }
 

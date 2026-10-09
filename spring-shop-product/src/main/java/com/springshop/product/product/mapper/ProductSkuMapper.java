@@ -6,7 +6,6 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
-import org.apache.ibatis.annotations.Update;
 
 import java.util.Collection;
 import java.util.List;
@@ -19,28 +18,24 @@ public interface ProductSkuMapper extends BaseMapper<ProductSku> {
 
     /**
      * 批量插入 SKU（批量导入用），调用前需保证每个 SKU 的 productId 已回填
+     *
+     * <p>⚠️ 自定义 {@code @Insert}，<b>不会回填自增主键</b>。调用方若需要新 SKU 的 id
+     * （例如建 {@code inventory} 库存行），得按 {@code sku_code} 回查一次。
+     *
+     * <p>注意这里<b>没有 {@code stock}</b>：库存自 V9 起归 {@code inventory} 表，
+     * V10 已删除镜像列 {@code product_sku.stock}，调用方要另外调 {@code InventoryService.initStock}。
      */
     @Insert("<script>"
-            + "INSERT INTO product_sku (product_id, sku_code, specs, price, original_price, stock, status) VALUES "
+            + "INSERT INTO product_sku (product_id, sku_code, specs, price, original_price, status) VALUES "
             + "<foreach collection='list' item='s' separator=','>"
-            + "(#{s.productId}, #{s.skuCode}, #{s.specs}, #{s.price}, #{s.originalPrice}, #{s.stock}, #{s.status})"
+            + "(#{s.productId}, #{s.skuCode}, #{s.specs}, #{s.price}, #{s.originalPrice}, #{s.status})"
             + "</foreach>"
             + "</script>")
     int insertBatch(@Param("list") List<ProductSku> skus);
 
-    /**
-     * 条件扣减库存：影响行数 0 表示库存不足，由调用方判定并抛业务异常
-     *
-     * <p>单条 UPDATE 由数据库保证原子性，是轻量级的并发扣减方案（无需分布式锁）。
-     */
-    @Update("UPDATE product_sku SET stock = stock - #{quantity}, version = version + 1 WHERE id = #{skuId} AND stock >= #{quantity}")
-    int deductStock(@Param("skuId") Long skuId, @Param("quantity") Integer quantity);
-
-    /**
-     * 回滚库存（订单取消时调用）
-     */
-    @Update("UPDATE product_sku SET stock = stock + #{quantity}, version = version + 1 WHERE id = #{skuId}")
-    int restoreStock(@Param("skuId") Long skuId, @Param("quantity") Integer quantity);
+    // 原 deductStock / restoreStock 已删除（2026-10-09，V9 数据模型对齐）。
+    // 它们操作的是 product_sku.stock —— 该列已由 V10 删除，库存流转统一走 InventoryService：
+    // 下单 lock / 支付 outbound / 取消 release。
 
     /**
      * 批量查询已被占用的 SKU 编码（<b>忽略逻辑删除</b>）

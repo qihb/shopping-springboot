@@ -38,7 +38,23 @@ public enum ResultCode {
     PRODUCT_SKU_CODE_DUPLICATE(2012, "SKU 编码重复"),
     PRODUCT_SKU_EMPTY(2013, "商品至少需要一个 SKU"),
     PRODUCT_OFF_SHELF(2014, "商品已下架"),
+    // 唯一性单元是 (商品名称, 规格)，即 SKU 粒度；判定范围仅未删除记录（is_deleted = 0）
+    PRODUCT_IDENTITY_DUPLICATE(2015, "同名同规格的商品已存在"),
+    PRODUCT_NOT_OFF_SHELF(2016, "商品未下架，不可删除"),
     PRODUCT_IMPORT_FILE_INVALID(2020, "导入文件不合法，请下载模板后重新填写"),
+    PRODUCT_INVENTORY_NOT_FOUND(2030, "库存记录不存在"),
+    PRODUCT_INVENTORY_INSUFFICIENT(2031, "库存不足"),
+    PRODUCT_INVENTORY_LOCKED_CONFLICT(2032, "调整后的在库量不能小于锁定量"),
+    PRODUCT_BRAND_NOT_FOUND(2040, "品牌不存在"),
+    PRODUCT_BRAND_NAME_EXISTS(2041, "品牌名称已存在"),
+    PRODUCT_BRAND_HAS_PRODUCTS(2042, "品牌下存在商品，不可删除"),
+    PRODUCT_ATTRIBUTE_NOT_FOUND(2050, "商品属性不存在"),
+    PRODUCT_ATTRIBUTE_NAME_EXISTS(2051, "该分类下已存在同名属性"),
+    PRODUCT_ATTRIBUTE_HAS_VALUES(2052, "属性下存在可选值，请先删除可选值"),
+    PRODUCT_ATTRIBUTE_IN_USE(2053, "属性已被 SKU 使用，不可删除"),
+    PRODUCT_ATTRIBUTE_VALUE_NOT_FOUND(2054, "属性可选值不存在"),
+    PRODUCT_ATTRIBUTE_VALUE_EXISTS(2055, "该属性下已存在同名可选值"),
+    PRODUCT_ATTRIBUTE_VALUE_IN_USE(2056, "可选值已被 SKU 使用，不可删除"),
 
     // 业务码：购物车模块（3000 段）
     CART_ITEM_NOT_FOUND(3001, "购物车条目不存在"),

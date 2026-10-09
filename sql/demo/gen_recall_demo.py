@@ -116,7 +116,7 @@ def build_products(conn, rng):
     每个商品造多个 SKU —— 真实电商 SPU/SKU 是一对多，且 cart_item 上有
     uk_user_sku 唯一键（每人每 SKU 仅一条），SKU 太少就造不出「购物车条目数超阈值」的羊毛账号。
     """
-    products, skus, plan = [], [], []
+    products, skus, inventories, plan = [], [], [], []
     pid = 0
     for count, archetype, price_range, abandon_range, paid_range in ARCHETYPES:
         for _ in range(count):
@@ -131,7 +131,9 @@ def build_products(conn, rng):
                 sku_id = (pid - 1) * SKUS_PER_PRODUCT + k + 1
                 sku_price = round(price * (1 + k * 0.08), 2)
                 skus.append((sku_id, pid, f"SKU-DEMO-{sku_id:05d}", f"规格:版本{k + 1}", sku_price,
-                             round(sku_price * 1.15, 2), rng.randint(50, 2000), 1, 0, 0))
+                             round(sku_price * 1.15, 2), 1, 0, 0))
+                # 库存自 V9 起归 inventory 表（V10 已删除 product_sku.stock 镜像列）
+                inventories.append((sku_id, rng.randint(50, 2000), 0))
                 sku_ids.append(sku_id)
 
             plan.append(dict(product_id=pid, name=name, price=price, archetype=archetype,
@@ -144,8 +146,10 @@ def build_products(conn, rng):
                     [(i + 1, n, i + 1) for i, n in enumerate(CATEGORY_NAMES)])
     cur.executemany("INSERT INTO product (id, category_id, name, subtitle, main_image, sales, status, is_deleted, version) "
                     "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", products)
-    cur.executemany("INSERT INTO product_sku (id, product_id, sku_code, specs, price, original_price, stock, status, is_deleted, version) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", skus)
+    cur.executemany("INSERT INTO product_sku (id, product_id, sku_code, specs, price, original_price, status, is_deleted, version) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", skus)
+    # 库存的唯一来源：每个 SKU 一行 inventory（缺行会被下单链路判为「库存不足」）
+    cur.executemany("INSERT INTO inventory (sku_id, stock, locked_stock) VALUES (%s,%s,%s)", inventories)
     conn.commit()
     return plan
 

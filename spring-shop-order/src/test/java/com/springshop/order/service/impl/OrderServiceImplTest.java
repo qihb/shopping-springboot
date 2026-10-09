@@ -24,6 +24,7 @@ import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import com.springshop.product.product.service.InventoryService;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -46,7 +47,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -77,6 +80,9 @@ class OrderServiceImplTest {
 
     @Mock
     private ProductMapper productMapper;
+
+    @Mock
+    private InventoryService inventoryService;
 
     @Mock
     private StringRedisTemplate stringRedisTemplate;
@@ -146,11 +152,11 @@ class OrderServiceImplTest {
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> orderService.create(USER_ID, createRequest(5L)));
         assertEquals(ResultCode.ORDER_SKU_UNAVAILABLE.getCode(), ex.getCode());
-        verify(productSkuMapper, never()).deductStock(any(), any());
+        verify(inventoryService, never()).lock(any(), anyInt(), any());
     }
 
     @Test
-    void create_should_fail_when_deduct_stock_returns_zero() {
+    void create_should_fail_when_inventory_insufficient() {
         when(shippingAddressMapper.selectById(5L)).thenReturn(address(5L, USER_ID));
         when(cartItemMapper.selectList(any(LambdaQueryWrapper.class)))
                 .thenReturn(List.of(cartItem(1L, 10L, 2)));
@@ -158,12 +164,33 @@ class OrderServiceImplTest {
                 .thenReturn(List.of(sku(10L, 100L, 1, "10.00")));
         when(productMapper.selectList(any(LambdaQueryWrapper.class)))
                 .thenReturn(List.of(product(100L, 1)));
-        when(productSkuMapper.deductStock(10L, 2)).thenReturn(0);
+        // 库存域抛「可售量不足」，订单域必须把它翻译成对外的 4004
+        doThrow(new BusinessException(ResultCode.PRODUCT_INVENTORY_INSUFFICIENT))
+                .when(inventoryService).lock(eq(10L), eq(2), any());
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.create(USER_ID, createRequest(5L)));
+        assertEquals(ResultCode.ORDER_STOCK_INSUFFICIENT.getCode(), ex.getCode(),
+                "库存域错误码必须映射为订单域的 4004，否则前端契约被破坏");
+        verify(orderMapper, never()).insert(any(Order.class));
+    }
+
+    @Test
+    void create_should_map_missing_inventory_row_to_stock_insufficient() {
+        when(shippingAddressMapper.selectById(5L)).thenReturn(address(5L, USER_ID));
+        when(cartItemMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(cartItem(1L, 10L, 2)));
+        when(productSkuMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(sku(10L, 100L, 1, "10.00")));
+        when(productMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(product(100L, 1)));
+        // 库存行缺失（历史脏数据）也归到 4004，不向前台泄漏内部状态
+        doThrow(new BusinessException(ResultCode.PRODUCT_INVENTORY_NOT_FOUND))
+                .when(inventoryService).lock(eq(10L), eq(2), any());
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> orderService.create(USER_ID, createRequest(5L)));
         assertEquals(ResultCode.ORDER_STOCK_INSUFFICIENT.getCode(), ex.getCode());
-        verify(orderMapper, never()).insert(any(Order.class));
     }
 
     @Test
@@ -184,6 +211,9 @@ class OrderServiceImplTest {
         assertNotNull(orderNo);
         assertEquals(23, orderNo.length());
         assertEquals(orderNo, saved.getOrderNo());
+
+        // 库存只做「锁定」：可售挪到锁定，业务单号用订单号（便于按订单对账流水）
+        verify(inventoryService).lock(10L, 2, orderNo);
         assertEquals(USER_ID, saved.getUserId());
         assertEquals(OrderStatus.PENDING_PAYMENT.getCode(), saved.getStatus());
         assertEquals(0, new BigDecimal("20.00").compareTo(saved.getTotalAmount()));
@@ -316,16 +346,26 @@ class OrderServiceImplTest {
     // ---------------- 状态流转 ----------------
 
     @Test
-    void pay_should_move_to_pending_shipment() {
+    void pay_should_move_to_pending_shipment_and_outbound() {
         when(orderMapper.selectOne(any(LambdaQueryWrapper.class)))
                 .thenReturn(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
+        when(orderMapper.markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.PENDING_SHIPMENT.getCode()), any(LocalDateTime.class))).thenReturn(1);
+        when(orderItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
+                orderItem(1000L, 10L, 100L, 2),
+                orderItem(1000L, 11L, 101L, 1)));
 
         orderService.pay(USER_ID, "NO1000");
 
-        ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
-        verify(orderMapper).updateById(captor.capture());
-        assertEquals(OrderStatus.PENDING_SHIPMENT.getCode(), captor.getValue().getStatus());
-        assertNotNull(captor.getValue().getPayTime());
+        // 状态推进走条件更新而不是 updateById：并发重复支付只有一方能过
+        ArgumentCaptor<LocalDateTime> payTimeCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(orderMapper).markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.PENDING_SHIPMENT.getCode()), payTimeCaptor.capture());
+        assertNotNull(payTimeCaptor.getValue());
+
+        // 支付成功即出库：在库量与锁定量同时扣减
+        verify(inventoryService).outbound(10L, 2, "NO1000");
+        verify(inventoryService).outbound(11L, 1, "NO1000");
     }
 
     @Test
@@ -336,14 +376,33 @@ class OrderServiceImplTest {
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> orderService.pay(USER_ID, "NO1000"));
         assertEquals(ResultCode.ORDER_STATUS_ILLEGAL.getCode(), ex.getCode());
-        verify(orderMapper, never()).updateById(any(Order.class));
+        verify(orderMapper, never()).markPaid(any(), any(), any(), any());
+        verify(inventoryService, never()).outbound(any(), anyInt(), any());
     }
 
     @Test
-    void markPaid_should_return_true_and_set_pending_shipment_when_update_hits() {
+    void pay_should_not_outbound_when_conditional_update_loses() {
+        when(orderMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
+        // 影响 0 行 = 另一方已支付或已取消，本请求不能再出库
+        when(orderMapper.markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.PENDING_SHIPMENT.getCode()), any(LocalDateTime.class))).thenReturn(0);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.pay(USER_ID, "NO1000"));
+        assertEquals(ResultCode.ORDER_STATUS_ILLEGAL.getCode(), ex.getCode());
+        verify(inventoryService, never()).outbound(any(), anyInt(), any());
+    }
+
+    @Test
+    void markPaid_should_return_true_and_outbound_when_update_hits() {
         // 条件更新命中：订单仍处于待付款状态，置为已付款（待发货）并记录支付时间
+        when(orderMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
         when(orderMapper.markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
                 eq(OrderStatus.PENDING_SHIPMENT.getCode()), any(LocalDateTime.class))).thenReturn(1);
+        when(orderItemMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(orderItem(1000L, 10L, 100L, 2)));
 
         boolean paid = orderService.markPaid("NO1000");
 
@@ -352,38 +411,68 @@ class OrderServiceImplTest {
         verify(orderMapper).markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
                 eq(OrderStatus.PENDING_SHIPMENT.getCode()), payTimeCaptor.capture());
         assertNotNull(payTimeCaptor.getValue());
+        verify(inventoryService).outbound(10L, 2, "NO1000");
     }
 
     @Test
     void markPaid_should_return_false_when_update_misses() {
         // 并发落败：订单已被取消或已被支付，条件更新影响 0 行，返回 false 供调用方回滚
+        when(orderMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
         when(orderMapper.markPaid(eq("NO1000"), eq(OrderStatus.PENDING_PAYMENT.getCode()),
                 eq(OrderStatus.PENDING_SHIPMENT.getCode()), any(LocalDateTime.class))).thenReturn(0);
 
         boolean paid = orderService.markPaid("NO1000");
 
         assertFalse(paid);
+        verify(inventoryService, never()).outbound(any(), anyInt(), any());
     }
 
     @Test
-    void cancel_should_restore_stock_and_decrease_sales() {
+    void markPaid_should_return_false_when_order_missing() {
+        when(orderMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+
+        assertFalse(orderService.markPaid("NO-MISSING"));
+        verify(orderMapper, never()).markPaid(any(), any(), any(), any());
+    }
+
+    @Test
+    void cancel_should_release_lock_and_decrease_sales() {
         when(orderMapper.selectOne(any(LambdaQueryWrapper.class)))
                 .thenReturn(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
+        when(orderMapper.cancelIfPendingPayment(eq(1000L), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.CANCELLED.getCode()), any(LocalDateTime.class))).thenReturn(1);
         when(orderItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
                 orderItem(1000L, 10L, 100L, 2),
                 orderItem(1000L, 11L, 101L, 1)));
 
         orderService.cancel(USER_ID, "NO1000");
 
-        verify(productSkuMapper).restoreStock(10L, 2);
-        verify(productSkuMapper).restoreStock(11L, 1);
+        // 取消只释放锁定（锁定 → 可售），不动在库量
+        verify(inventoryService).release(10L, 2, "NO1000");
+        verify(inventoryService).release(11L, 1, "NO1000");
         verify(productMapper).decreaseSales(100L, 2);
         verify(productMapper).decreaseSales(101L, 1);
 
-        ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
-        verify(orderMapper).updateById(captor.capture());
-        assertEquals(OrderStatus.CANCELLED.getCode(), captor.getValue().getStatus());
-        assertNotNull(captor.getValue().getCancelTime());
+        // 状态推进与超时任务共用同一个条件更新，并发下只有一方能过
+        ArgumentCaptor<LocalDateTime> cancelTimeCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(orderMapper).cancelIfPendingPayment(eq(1000L), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.CANCELLED.getCode()), cancelTimeCaptor.capture());
+        assertNotNull(cancelTimeCaptor.getValue());
+    }
+
+    @Test
+    void cancel_should_fail_and_not_release_when_conditional_update_loses() {
+        when(orderMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
+        // 影响 0 行 = 另一方（超时任务或重复取消）已推进状态，本请求不能再释放锁定
+        when(orderMapper.cancelIfPendingPayment(eq(1000L), eq(OrderStatus.PENDING_PAYMENT.getCode()),
+                eq(OrderStatus.CANCELLED.getCode()), any(LocalDateTime.class))).thenReturn(0);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.cancel(USER_ID, "NO1000"));
+        assertEquals(ResultCode.ORDER_STATUS_ILLEGAL.getCode(), ex.getCode());
+        verify(inventoryService, never()).release(any(), anyInt(), any());
     }
 
     // ---------------- 系统取消（超时自动取消） ----------------
@@ -399,9 +488,9 @@ class OrderServiceImplTest {
 
         orderService.systemCancel(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
 
-        // 逐条回滚库存与销量
-        verify(productSkuMapper).restoreStock(10L, 2);
-        verify(productSkuMapper).restoreStock(11L, 1);
+        // 逐条释放锁定并回滚销量
+        verify(inventoryService).release(10L, 2, "NO1000");
+        verify(inventoryService).release(11L, 1, "NO1000");
         verify(productMapper).decreaseSales(100L, 2);
         verify(productMapper).decreaseSales(101L, 1);
 
@@ -418,13 +507,13 @@ class OrderServiceImplTest {
 
     @Test
     void systemCancel_should_skip_rollback_when_conditional_update_misses() {
-        // 条件更新影响 0 行：订单已被用户取消或已支付，静默返回，不回滚库存与销量
+        // 条件更新影响 0 行：订单已被用户取消或已支付，静默返回，不释放锁定与销量
         when(orderMapper.cancelIfPendingPayment(eq(1000L), eq(OrderStatus.PENDING_PAYMENT.getCode()),
                 eq(OrderStatus.CANCELLED.getCode()), any(LocalDateTime.class))).thenReturn(0);
 
         orderService.systemCancel(order(1000L, OrderStatus.PENDING_PAYMENT.getCode()));
 
-        verify(productSkuMapper, never()).restoreStock(any(), any());
+        verify(inventoryService, never()).release(any(), anyInt(), any());
         verify(productMapper, never()).decreaseSales(any(), any());
         verify(orderItemMapper, never()).selectList(any(LambdaQueryWrapper.class));
     }
@@ -476,7 +565,6 @@ class OrderServiceImplTest {
         when(productMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(
                 product(100L, 1),
                 product(101L, 1)));
-        when(productSkuMapper.deductStock(any(), any())).thenReturn(1);
         when(orderMapper.insert(any(Order.class))).thenAnswer(invocation -> {
             Order entity = invocation.getArgument(0);
             entity.setId(1000L);

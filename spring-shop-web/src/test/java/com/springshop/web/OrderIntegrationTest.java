@@ -1,9 +1,12 @@
 package com.springshop.web;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.springshop.product.product.entity.Inventory;
 import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
+import com.springshop.product.product.mapper.InventoryMapper;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,9 +41,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * 订单与收货地址接口集成测试
  *
- * <p>覆盖「地址默认唯一 → 购物车勾选下单（扣库存 / 清购物车）→ 库存不足回滚 → 越权防护
- * → 支付/发货/确认收货状态流转 → 取消回滚库存 → 后台权限隔离」全链路，
+ * <p>覆盖「地址默认唯一 → 购物车勾选下单（锁定库存 / 清购物车）→ 可售量不足回滚 → 越权防护
+ * → 支付出库 / 发货 / 确认收货状态流转 → 取消释放锁定 → 后台权限隔离」全链路，
  * 使用 H2 内存库 + Flyway 自动建表，不依赖本地 MySQL 与 Redis。
+ *
+ * <p><b>V9 起库存以 {@code inventory} 表为准</b>（三量：在库 / 锁定 / 可售 = 在库 − 锁定）：
+ * <ul>
+ *   <li>下单只「锁定」——在库量不变、锁定量增加；</li>
+ *   <li>支付「出库」——在库量与锁定量同时扣减；</li>
+ *   <li>取消「释放」——锁定量回到可售。</li>
+ * </ul>
+ * 因此本类的库存断言全部读 {@code inventory}，不看 {@code product_sku.stock}
+ * （该迁移期镜像列已由 V10 删除）。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -59,6 +71,9 @@ class OrderIntegrationTest {
 
     @Autowired
     private ProductSkuMapper productSkuMapper;
+
+    @Autowired
+    private InventoryMapper inventoryMapper;
 
     @MockBean
     private StringRedisTemplate stringRedisTemplate;
@@ -118,7 +133,7 @@ class OrderIntegrationTest {
     }
 
     @Test
-    void create_order_should_deduct_stock_and_clear_checked_items() throws Exception {
+    void create_order_should_lock_stock_and_clear_checked_items() throws Exception {
         String token = loginAndGetToken("order_user_deduct");
         Long addressId = createAddress(token, true);
         Long skuId = createSku(1, 1, 10);
@@ -134,8 +149,9 @@ class OrderIntegrationTest {
         String orderNo = json.get("data").asText();
         assertFalse(orderNo.isEmpty());
 
-        // 初始库存 10，买 2 → 8；勾选条目已被清理
-        assertEquals(8, productSkuMapper.selectById(skuId).getStock());
+        // 下单只锁定：在库量仍是 10，锁定量 2（可售 8）；勾选条目已被清理
+        assertEquals(10, inventoryOf(skuId).getStock());
+        assertEquals(2, inventoryOf(skuId).getLockedStock());
         assertEquals(0, cartItems(token).size());
 
         JsonNode orders = readJson(mockMvc.perform(get("/api/orders")
@@ -146,14 +162,14 @@ class OrderIntegrationTest {
     }
 
     @Test
-    void create_order_should_return_4004_and_rollback_stock_when_short() throws Exception {
+    void create_order_should_return_4004_when_available_short() throws Exception {
         String token = loginAndGetToken("order_user_short");
         Long addressId = createAddress(token, true);
         Long skuId = createSku(1, 1, 1);
-        // 加购时库存校验允许（stock=1，买 1 件），随后直接把库存扣成 0 制造库存不足
+        // 加购时库存校验允许（可售 1，买 1 件），随后把在库量调成 0 制造「下单时已不足」
         addCartItem(token, skuId, 1);
-        productSkuMapper.deductStock(skuId, 1);
-        assertEquals(0, productSkuMapper.selectById(skuId).getStock());
+        inventoryMapper.adjustStock(skuId, 0);
+        assertEquals(0, inventoryOf(skuId).getStock());
 
         JsonNode json = readJson(mockMvc.perform(post("/api/orders")
                         .header("Authorization", "Bearer " + token)
@@ -163,8 +179,9 @@ class OrderIntegrationTest {
                 .andReturn());
         assertEquals(4004, json.get("code").asInt());
 
-        // 库存未被扣成负数，购物车条目仍在
-        assertEquals(0, productSkuMapper.selectById(skuId).getStock());
+        // 失败整体回滚：在库量仍是 0、锁定量仍为 0（没锁上），购物车条目仍在
+        assertEquals(0, inventoryOf(skuId).getStock());
+        assertEquals(0, inventoryOf(skuId).getLockedStock());
         assertEquals(1, cartItems(token).size());
     }
 
@@ -193,6 +210,9 @@ class OrderIntegrationTest {
 
         // 支付：待付款 → 待发货
         assertEquals(200, postAction("/api/orders/" + orderNo + "/pay", token).get("code").asInt());
+        // 支付即出库：在库量 10 → 9，锁定量 2 → 0（买 1 件）
+        assertEquals(9, inventoryOf(skuId).getStock());
+        assertEquals(0, inventoryOf(skuId).getLockedStock());
 
         // 后台发货：待发货 → 待收货
         String adminToken = loginAsAdmin();
@@ -209,18 +229,21 @@ class OrderIntegrationTest {
     }
 
     @Test
-    void cancel_should_restore_stock_and_keep_order() throws Exception {
+    void cancel_should_release_lock_and_keep_order() throws Exception {
         String token = loginAndGetToken("order_user_cancel");
         Long addressId = createAddress(token, true);
         Long skuId = createSku(1, 1, 10);
         addCartItem(token, skuId, 2);
         String orderNo = createOrder(token, addressId);
-        assertEquals(8, productSkuMapper.selectById(skuId).getStock());
+        // 下单只锁定：在库量仍 10、锁定量 2
+        assertEquals(10, inventoryOf(skuId).getStock());
+        assertEquals(2, inventoryOf(skuId).getLockedStock());
 
         assertEquals(200, postAction("/api/orders/" + orderNo + "/cancel", token).get("code").asInt());
 
-        // 取消回滚库存，订单仍可查询且状态为已取消（5）
-        assertEquals(10, productSkuMapper.selectById(skuId).getStock());
+        // 取消释放锁定：在库量仍 10、锁定量归零；订单仍可查询且状态为已取消（5）
+        assertEquals(10, inventoryOf(skuId).getStock());
+        assertEquals(0, inventoryOf(skuId).getLockedStock());
         JsonNode detail = readJson(mockMvc.perform(get("/api/orders/" + orderNo)
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
@@ -283,7 +306,10 @@ class OrderIntegrationTest {
     }
 
     /**
-     * 构造一个商品 + SKU，返回 SKU id（价格 10.00）
+     * 构造一个商品 + SKU，并初始化对应的库存行，返回 SKU id（价格 10.00）
+     *
+     * <p>V9 起库存以 {@code inventory} 表为准，但测试是手工插 SKU、不走商品创建路径，
+     * 因此必须自己补一行库存 —— 否则可售量为 0，加购/下单会直接判「库存不足」。
      */
     private Long createSku(int productStatus, int skuStatus, int stock) {
         Product product = new Product();
@@ -296,10 +322,23 @@ class OrderIntegrationTest {
         sku.setProductId(product.getId());
         sku.setSkuCode("SKU-" + System.nanoTime());
         sku.setPrice(new BigDecimal("10.00"));
-        sku.setStock(stock);
         sku.setStatus(skuStatus);
         productSkuMapper.insert(sku);
+
+        Inventory inventory = new Inventory();
+        inventory.setSkuId(sku.getId());
+        inventory.setStock(stock);
+        inventory.setLockedStock(0);
+        inventoryMapper.insert(inventory);
+
         return sku.getId();
+    }
+
+    /**
+     * 读某个 SKU 的库存行（在库量 / 锁定量）
+     */
+    private Inventory inventoryOf(Long skuId) {
+        return inventoryMapper.selectOne(Wrappers.<Inventory>lambdaQuery().eq(Inventory::getSkuId, skuId));
     }
 
     /**

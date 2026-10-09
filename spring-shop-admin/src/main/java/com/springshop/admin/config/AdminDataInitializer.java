@@ -205,6 +205,17 @@ public class AdminDataInitializer implements ApplicationRunner {
         ensureMenu("新增商品", 3, productMgmt.getId(), null, "product:product:create", null, 1, menus);
         ensureMenu("修改商品", 3, productMgmt.getId(), null, "product:product:update", null, 2, menus);
         ensureMenu("导入商品", 3, productMgmt.getId(), null, "product:product:import", null, 3, menus);
+        ensureMenu("删除商品", 3, productMgmt.getId(), null, "product:product:delete", null, 4, menus);
+        Menu inventory = ensureMenu("库存管理", 2, product.getId(), "/product/inventory", "product:inventory:list", null, 3, menus);
+        ensureMenu("调整库存", 3, inventory.getId(), null, "product:inventory:adjust", null, 1, menus);
+        Menu brand = ensureMenu("品牌管理", 2, product.getId(), "/product/brand", "product:brand:list", null, 4, menus);
+        ensureMenu("新增品牌", 3, brand.getId(), null, "product:brand:create", null, 1, menus);
+        ensureMenu("修改品牌", 3, brand.getId(), null, "product:brand:update", null, 2, menus);
+        ensureMenu("删除品牌", 3, brand.getId(), null, "product:brand:delete", null, 3, menus);
+        Menu attribute = ensureMenu("属性管理", 2, product.getId(), "/product/attribute", "product:attribute:list", null, 5, menus);
+        ensureMenu("新增属性", 3, attribute.getId(), null, "product:attribute:create", null, 1, menus);
+        ensureMenu("修改属性", 3, attribute.getId(), null, "product:attribute:update", null, 2, menus);
+        ensureMenu("删除属性", 3, attribute.getId(), null, "product:attribute:delete", null, 3, menus);
 
         Menu order = ensureMenu("订单管理", 1, 0L, "/order", "order", "List", 3, menus);
         Menu orderList = ensureMenu("订单列表", 2, order.getId(), "/order/list", "order:order:list", null, 1, menus);

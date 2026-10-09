@@ -5,8 +5,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.springshop.pay.entity.PayRecord;
 import com.springshop.pay.mapper.PayRecordMapper;
+import com.springshop.product.product.entity.Inventory;
 import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
+import com.springshop.product.product.mapper.InventoryMapper;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,10 +64,16 @@ class PayIntegrationTest {
     private ProductSkuMapper productSkuMapper;
 
     @Autowired
+    private InventoryMapper inventoryMapper;
+
+    @Autowired
     private PayRecordMapper payRecordMapper;
 
     @MockBean
     private StringRedisTemplate stringRedisTemplate;
+
+    /** 最近一次 {@link #createSku()} 建出的 SKU id，供库存断言使用 */
+    private Long lastSkuId;
 
     @BeforeEach
     void setUpRedisMocks() {
@@ -110,6 +118,11 @@ class PayIntegrationTest {
         assertEquals(0, records.get(0).getAmount().compareTo(new BigDecimal("10.00")));
         assertEquals(1, records.get(0).getStatus());
         assertNotNull(records.get(0).getPayTime());
+
+        // 支付即出库：下单锁定的 1 件转为已售 —— 在库 10 → 9、锁定 1 → 0
+        Inventory inventory = inventoryOf(lastSkuId);
+        assertEquals(9, inventory.getStock());
+        assertEquals(0, inventory.getLockedStock());
     }
 
     @Test
@@ -125,6 +138,9 @@ class PayIntegrationTest {
 
         assertEquals(1, payRecords(orderNo).size());
         assertEquals(2, orderDetailStatus(token, orderNo));
+        // 重复支付不能再出库一次：在库量仍应是 9（条件更新落败 → 不触发 outbound）
+        assertEquals(9, inventoryOf(lastSkuId).getStock());
+        assertEquals(0, inventoryOf(lastSkuId).getLockedStock());
     }
 
     @Test
@@ -189,7 +205,10 @@ class PayIntegrationTest {
     }
 
     /**
-     * 构造一个商品 + SKU（价格 10.00）
+     * 构造一个商品 + SKU（价格 10.00），并初始化库存行
+     *
+     * <p>V9 起库存以 {@code inventory} 表为准，测试手工插 SKU 不会走商品创建路径，
+     * 必须自己补一行库存，否则可售量为 0，加购/下单会直接判「库存不足」。
      */
     private Long createSku() {
         Product product = new Product();
@@ -202,10 +221,25 @@ class PayIntegrationTest {
         sku.setProductId(product.getId());
         sku.setSkuCode("SKU-PAY-" + System.nanoTime());
         sku.setPrice(new BigDecimal("10.00"));
-        sku.setStock(10);
         sku.setStatus(1);
         productSkuMapper.insert(sku);
+
+        Inventory inventory = new Inventory();
+        inventory.setSkuId(sku.getId());
+        inventory.setStock(10);
+        inventory.setLockedStock(0);
+        inventoryMapper.insert(inventory);
+
+        lastSkuId = sku.getId();
         return sku.getId();
+    }
+
+    /**
+     * 读某个 SKU 的库存行（在库量 / 锁定量）
+     */
+    private Inventory inventoryOf(Long skuId) {
+        return inventoryMapper.selectOne(new LambdaQueryWrapper<Inventory>()
+                .eq(Inventory::getSkuId, skuId));
     }
 
     /**

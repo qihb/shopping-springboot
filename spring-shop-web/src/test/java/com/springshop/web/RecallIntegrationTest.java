@@ -202,8 +202,11 @@ class RecallIntegrationTest {
                 + "VALUES (?, 0, ?, 1, 1)", productId, "测试分类" + productId);
         jdbcTemplate.update("INSERT INTO product (id, category_id, name, subtitle, sales, status, is_deleted, version) "
                 + "VALUES (?, ?, ?, ?, 0, 1, 0, 0)", productId, productId, name, "召回集成测试");
-        jdbcTemplate.update("INSERT INTO product_sku (id, product_id, sku_code, specs, price, stock, status, is_deleted, version) "
-                + "VALUES (?, ?, ?, ?, ?, 100, 1, 0, 0)", skuId, productId, "SKU-RECALL-" + skuId, "规格:默认", new BigDecimal("199.00"));
+        // 注意这里没有 stock：库存自 V9 起归 inventory 表（V10 已删除 product_sku.stock 镜像列），
+        // 下面单独建库存行 —— 与生产一致，每个 SKU 都必须有 inventory 行
+        jdbcTemplate.update("INSERT INTO product_sku (id, product_id, sku_code, specs, price, status, is_deleted, version) "
+                + "VALUES (?, ?, ?, ?, ?, 1, 0, 0)", skuId, productId, "SKU-RECALL-" + skuId, "规格:默认", new BigDecimal("199.00"));
+        jdbcTemplate.update("INSERT INTO inventory (sku_id, stock, locked_stock) VALUES (?, 100, 0)", skuId);
     }
 
     private void seedUser(Long userId, String phone) {

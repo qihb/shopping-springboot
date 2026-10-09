@@ -1,0 +1,26 @@
+-- Flyway 版本化迁移 V10：移除迁移期镜像列 product_sku.stock
+--
+-- 背景：V9 把库存从 product_sku.stock 迁到独立表 inventory（在库量 / 未付款锁定量 / 可售量三分），
+-- 并把 product_sku.stock 明确留作「迁移期镜像」，约定「业务写入路径全部切到 inventory 后由后续版本移除」。
+-- 本脚本就是这个「后续版本」：V9 之后所有库存读写都已改走 InventoryService，该列不再有任何读者与写者。
+--
+-- ⚠️ 执行前置检查（本脚本不会替你做，请在目标库先跑一遍，结果必须是 0 行）：
+--
+--     SELECT s.id, s.sku_code, s.stock AS sku_stock, i.stock AS inv_stock
+--     FROM product_sku s LEFT JOIN inventory i ON i.sku_id = s.id
+--     WHERE s.is_deleted = 0 AND (i.id IS NULL OR s.stock <> i.stock);
+--
+-- 只要有一行不一致，就说明还有写入路径在改 product_sku.stock —— 此时 DROP 会静默丢掉那部分库存信息。
+-- 本机 dev 库（60 商品 / 64 SKU，已跑完 V9 回填）实测该查询返回 0 行，可安全执行。
+--
+-- 为什么校验不写进脚本自身：迁移脚本要在 MySQL 8 与 H2（migration-test 副本）上都能跑，
+-- 而「不一致即报错中止」需要 SIGNAL / 存储过程，两套方言写法不同，硬塞进来会牺牲可移植性。
+-- 因此把校验放在注释里，由发布流程负责执行。
+--
+-- 回滚说明：本脚本不可逆（列一删，数据即丢失）。要回退只能从 inventory 反向重建该列。
+--
+-- 为什么不顺手改 V2 里原有的列定义：V2 是已发布脚本，改它会改 Flyway 校验和，
+-- 让所有已经跑到 V9 的库「启动即校验失败」。保持 V2 不动、由 V10 负责删列，
+-- 新增库会依次走 V2（建列）→ V9（回填）→ V10（删列），最终结构与老库完全一致。
+
+ALTER TABLE `product_sku` DROP COLUMN `stock`;

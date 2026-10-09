@@ -37,21 +37,50 @@ INSERT INTO `product` (`id`, `category_id`, `name`, `subtitle`, `main_image`, `d
 (10, 10, '百草味 每日黑麦面包 1kg', '全麦0蔗糖 | 早餐代餐', 'https://picsum.photos/seed/p10/800/800', '<p>全麦黑麦配方，0 蔗糖添加，独立包装，早餐代餐首选。</p>', 3320, 1);
 
 -- ---------- 商品 SKU ----------
-INSERT INTO `product_sku` (`id`, `product_id`, `sku_code`, `specs`, `price`, `original_price`, `stock`, `status`) VALUES
-(1,  1, 'SKU-STARX1-BLK-12256', '颜色:曜石黑;版本:12+256G', 5999.00, 6499.00, 200, 1),
-(2,  1, 'SKU-STARX1-BLU-12256', '颜色:冰川蓝;版本:12+256G', 5999.00, 6499.00, 180, 1),
-(3,  1, 'SKU-STARX1-BLK-16512', '颜色:曜石黑;版本:16+512G', 6999.00, 7599.00, 80,  1),
-(4,  2, 'SKU-APP-APP3-STD',      '规格:标准版',              1899.00, 1999.00, 500, 1),
-(5,  3, 'SKU-WATCHS4-BLK',       '表带:黑色氟橡胶',          1299.00, 1499.00, 300, 1),
-(6,  3, 'SKU-WATCHS4-BRN',       '表带:棕色真皮',            1399.00, 1599.00, 150, 1),
-(7,  4, 'SKU-TP-T14P-I7-32-1T',  '配置:i7/32G/1T',           8499.00, 8999.00, 60,  1),
-(8,  5, 'SKU-MX4S-GRAPHITE',     '颜色:石墨黑',              799.00,  899.00,  400, 1),
-(9,  6, 'SKU-K87-BLK-RED',       '颜色:黑;轴体:红轴',        399.00,  459.00,  260, 1),
-(10, 6, 'SKU-K87-WHT-BRN',       '颜色:白;轴体:茶轴',        399.00,  459.00,  240, 1),
-(11, 7, 'SKU-FB-4L-IH',          '容量:4L',                  299.00,  399.00,  350, 1),
-(12, 8, 'SKU-PHILIPS-HX9954',    '颜色:粉白',                699.00,  899.00,  280, 1),
-(13, 9, 'SKU-SSS-NUT-750',       '规格:750g/30包',           79.00,   99.00,  1000, 1),
-(14, 10, 'SKU-BCW-BREAD-1K',     '规格:1kg',                 39.90,   49.90,  800, 1);
+-- 注意：这里没有 stock 列。库存自 V9 起归 inventory 表，product_sku.stock 这个迁移期镜像
+-- 列已由 V10 删除；库存数据见下方「库存」段。
+INSERT INTO `product_sku` (`id`, `product_id`, `sku_code`, `specs`, `price`, `original_price`, `status`) VALUES
+(1,  1, 'SKU-STARX1-BLK-12256', '颜色:曜石黑;版本:12+256G', 5999.00, 6499.00, 1),
+(2,  1, 'SKU-STARX1-BLU-12256', '颜色:冰川蓝;版本:12+256G', 5999.00, 6499.00, 1),
+(3,  1, 'SKU-STARX1-BLK-16512', '颜色:曜石黑;版本:16+512G', 6999.00, 7599.00, 1),
+(4,  2, 'SKU-APP-APP3-STD',      '规格:标准版',              1899.00, 1999.00, 1),
+(5,  3, 'SKU-WATCHS4-BLK',       '表带:黑色氟橡胶',          1299.00, 1499.00, 1),
+(6,  3, 'SKU-WATCHS4-BRN',       '表带:棕色真皮',            1399.00, 1599.00, 1),
+(7,  4, 'SKU-TP-T14P-I7-32-1T',  '配置:i7/32G/1T',           8499.00, 8999.00, 1),
+(8,  5, 'SKU-MX4S-GRAPHITE',     '颜色:石墨黑',              799.00,  899.00,  1),
+(9,  6, 'SKU-K87-BLK-RED',       '颜色:黑;轴体:红轴',        399.00,  459.00,  1),
+(10, 6, 'SKU-K87-WHT-BRN',       '颜色:白;轴体:茶轴',        399.00,  459.00,  1),
+(11, 7, 'SKU-FB-4L-IH',          '容量:4L',                  299.00,  399.00,  1),
+(12, 8, 'SKU-PHILIPS-HX9954',    '颜色:粉白',                699.00,  899.00,  1),
+(13, 9, 'SKU-SSS-NUT-750',       '规格:750g/30包',           79.00,   99.00,   1),
+(14, 10, 'SKU-BCW-BREAD-1K',     '规格:1kg',                 39.90,   49.90,   1);
+
+-- ---------- 库存（V9 起库存的唯一来源） ----------
+-- 每个 SKU 都必须有一行 inventory，否则下单时会被判为「库存不足」（库存行缺失）。
+-- locked_stock 一律 0：种子数据没有未付款订单。
+INSERT INTO `inventory` (`sku_id`, `stock`, `locked_stock`) VALUES
+(1,  200,  0),
+(2,  180,  0),
+(3,  80,   0),
+(4,  500,  0),
+(5,  300,  0),
+(6,  150,  0),
+(7,  60,   0),
+(8,  400,  0),
+(9,  260,  0),
+(10, 240,  0),
+(11, 350,  0),
+(12, 280,  0),
+(13, 1000, 0),
+(14, 800,  0);
+
+-- 库存变更流水：与 InventoryService.initStock 同口径，初始化补一条 change_type=5 的流水，
+-- 这样「流水最后一条的 stock_after == inventory.stock」这条对账不变量从种子数据起就成立
+INSERT INTO `inventory_log` (`sku_id`, `product_id`, `change_type`, `stock_before`, `stock_after`,
+                             `locked_before`, `locked_after`, `remark`)
+SELECT `sku_id`, s.`product_id`, 5, 0, `stock`, 0, 0, '种子数据初始化'
+FROM `inventory` i
+JOIN `product_sku` s ON s.`id` = i.`sku_id`;
 
 -- ---------- 商品图片（详情图集）----------
 INSERT INTO `product_image` (`product_id`, `image_url`, `sort`) VALUES
@@ -94,6 +123,8 @@ INSERT INTO `order_item` (`order_id`, `product_id`, `sku_id`, `product_name`, `s
 -- TRUNCATE TABLE cart_item;
 -- TRUNCATE TABLE shipping_address;
 -- TRUNCATE TABLE product_image;
+-- TRUNCATE TABLE inventory_log;
+-- TRUNCATE TABLE inventory;
 -- TRUNCATE TABLE product_sku;
 -- TRUNCATE TABLE product;
 -- TRUNCATE TABLE product_category;

@@ -103,8 +103,8 @@ class ProductImportIntegrationTest {
         ensureCategory(token);
 
         JsonNode task = runImport(token, List.of(
-                importRow("导入商品A-" + RUN_TAG, "SKU-IMP-A1-" + RUN_TAG, "199.00", "10"),
-                importRow("导入商品A-" + RUN_TAG, "SKU-IMP-A2-" + RUN_TAG, "299.00", "20")));
+                importRow("导入商品A-" + RUN_TAG, "SKU-IMP-A1-" + RUN_TAG, "颜色:黑", "199.00", "10"),
+                importRow("导入商品A-" + RUN_TAG, "SKU-IMP-A2-" + RUN_TAG, "颜色:白", "299.00", "20")));
 
         assertEquals(2, task.get("processedRows").asInt(), "详情: " + task);
         assertEquals(2, task.get("successRows").asInt(), "同名两行应聚合为一个 SPU + 两个 SKU，详情: " + task);
@@ -164,22 +164,21 @@ class ProductImportIntegrationTest {
     }
 
     /**
-     * 「同名 + 换一批 SKU 编码」重传：{@code product.name} 上没有唯一索引，原本会静默建出
-     * 第二个同名 SPU（运营在列表里看到两个一模一样的商品，事后无法合并）。
-     * 现在必须整组拒绝，并且库里仍然只有一个同名商品。
+     * 「同名同规格」重传：{@code product.name} 上没有唯一索引，若放行会静默建出第二个同名 SPU
+     * （运营在列表里看到两个一模一样的商品，事后无法合并）。必须拒绝该行，并且库里仍只有一个同名商品。
      */
     @Test
-    void reimportSameProductNameWithNewSkuCode_shouldBeRejectedInsteadOfCreatingSecondSpu() throws Exception {
+    void reimportSameNameAndSpecs_shouldBeRejectedInsteadOfCreatingSecondSpu() throws Exception {
         String token = loginAsAdmin();
         ensureCategory(token);
         String productName = "重传商品-" + RUN_TAG;
         runImport(token, List.of(importRow(productName, "SKU-REIMP-1-" + RUN_TAG, "50.00", "3")));
 
-        // SKU 编码是全新的，编码查重拦不住它——只有商品名查重能拦住
+        // SKU 编码是全新的，编码查重拦不住它——只有 (名称, 规格) 查重能拦住
         JsonNode task = runImport(token, List.of(
                 importRow(productName, "SKU-REIMP-2-" + RUN_TAG, "60.00", "3")));
 
-        assertEquals(0, task.get("successRows").asInt(), "同名商品必须整组拒绝，详情: " + task);
+        assertEquals(0, task.get("successRows").asInt(), "同名同规格必须拒绝，详情: " + task);
         assertEquals(1, task.get("failRows").asInt(), "详情: " + task);
 
         // 提示要能让运营知道下一步做什么，而不是只给一句「导入失败」
@@ -196,6 +195,34 @@ class ProductImportIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString()).get("data").get("records");
         assertEquals(1, records.size(), () -> "同名商品不应被建出第二个，实际返回: " + records);
+    }
+
+    /**
+     * 「同名 + 不同规格」重传：<b>复用同一个 SPU，只追加 SKU</b>，不新建 SPU。
+     *
+     * <p>这是「同名不同规格 = 同一 SPU 下两个 SKU」在导入侧的落地：运营给已有商品补一个新颜色，
+     * 不该被逼着换个商品名，也不该被迫去后台逐条点。
+     */
+    @Test
+    void reimportSameNameWithDifferentSpecs_shouldAppendSkuToExistingProduct() throws Exception {
+        String token = loginAsAdmin();
+        ensureCategory(token);
+        String productName = "补规格商品-" + RUN_TAG;
+        runImport(token, List.of(importRow(productName, "SKU-APPEND-1-" + RUN_TAG, "颜色:黑", "50.00", "3")));
+
+        JsonNode task = runImport(token, List.of(
+                importRow(productName, "SKU-APPEND-2-" + RUN_TAG, "颜色:白", "60.00", "3")));
+
+        assertEquals(1, task.get("successRows").asInt(), "详情: " + task);
+        assertEquals(0, task.get("failRows").asInt(), "详情: " + task);
+
+        // 没有建出第二个同名 SPU
+        JsonNode records = readJson(mockMvc.perform(get("/api/admin/products")
+                        .param("keyword", productName)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).get("data").get("records");
+        assertEquals(1, records.size(), () -> "同名不同规格应复用同一 SPU，实际返回: " + records);
     }
 
     @Test
@@ -233,8 +260,12 @@ class ProductImportIntegrationTest {
     // ---------- 测试辅助 ----------
 
     private List<String> importRow(String productName, String skuCode, String price, String stock) {
+        return importRow(productName, skuCode, "颜色:黑", price, stock);
+    }
+
+    private List<String> importRow(String productName, String skuCode, String specs, String price, String stock) {
         return List.of(productName, "副标题", "https://example.com/a.jpg", CATEGORY_NAME,
-                skuCode, "颜色:黑", price, "", stock, "1");
+                skuCode, specs, price, "", stock, "1");
     }
 
     /**

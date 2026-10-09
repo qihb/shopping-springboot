@@ -19,6 +19,8 @@ public interface OrderService {
 
     /**
      * 下单：来源为购物车勾选项，返回订单号
+     *
+     * <p>库存只做<b>锁定</b>（可售 → 锁定），不动在库量；真正的出库发生在支付成功时。
      */
     String create(Long userId, OrderCreateRequest request);
 
@@ -38,7 +40,9 @@ public interface OrderService {
     Order getByOrderNo(String orderNo);
 
     /**
-     * 模拟支付：待付款 → 待发货
+     * 模拟支付：待付款 → 待发货，并在同一事务内<b>出库</b>（在库量与锁定量同时扣减）
+     *
+     * <p>走条件更新，因此并发重复支付只有一方成功，不会把库存扣两次。
      */
     void pay(Long userId, String orderNo);
 
@@ -46,16 +50,18 @@ public interface OrderService {
      * 标记订单已支付（跨模块，供支付模块在事务内调用）：仅当订单仍为待付款时
      * 置为待发货并记录支付时间，条件更新防并发；返回是否更新成功（false 表示
      * 订单已被取消或已支付，调用方据此回滚整个支付事务）
+     *
+     * <p>成功时会在同一事务内出库；出库失败抛异常，连状态变更一起回滚。
      */
     boolean markPaid(String orderNo);
 
     /**
-     * 取消订单：待付款 → 已取消，回滚库存
+     * 取消订单：待付款 → 已取消，释放库存锁定（锁定 → 可售）
      */
     void cancel(Long userId, String orderNo);
 
     /**
-     * 系统取消（超时自动取消定时任务调用）：仅当订单仍为待付款时置为已取消并回滚库存；
+     * 系统取消（超时自动取消定时任务调用）：仅当订单仍为待付款时置为已取消并释放库存锁定；
      * 订单已被用户取消或已支付时静默返回，不抛异常
      */
     void systemCancel(Order order);

@@ -26,6 +26,7 @@ import com.springshop.product.product.entity.Product;
 import com.springshop.product.product.entity.ProductSku;
 import com.springshop.product.product.mapper.ProductMapper;
 import com.springshop.product.product.mapper.ProductSkuMapper;
+import com.springshop.product.product.service.InventoryService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,10 +48,18 @@ import java.util.stream.Collectors;
 /**
  * 订单服务实现
  *
- * <p>下单在同一事务内完成「校验 → 扣库存 → 写订单/明细 → 清购物车勾选项」，
+ * <p>下单在同一事务内完成「校验 → 锁定库存 → 写订单/明细 → 清购物车勾选项」，
  * 任一步失败（含库存不足）整体回滚；收货信息与商品信息均按下单时刻落库快照。
  *
- * <p>依赖购物车模块读取/清理勾选条目，依赖商品模块做只读校验与库存、销量增减。
+ * <p><b>库存三态流转（V9 起，库存独立表 `inventory`）</b>：
+ * <ul>
+ *   <li>下单 → {@code inventoryService.lock}：可售挪到锁定，<b>不动在库量</b>；</li>
+ *   <li>支付 → {@code inventoryService.outbound}：锁定转已售，在库与锁定同时扣减；</li>
+ *   <li>取消 / 超时 → {@code inventoryService.release}：锁定挪回可售。</li>
+ * </ul>
+ * 三者都是条件更新（0 行即条件不满足），因此<b>重复支付 / 重复取消不会重复扣减</b>。
+ *
+ * <p>依赖购物车模块读取/清理勾选条目，依赖商品模块做只读校验、库存流转与销量增减。
  */
 @Service
 public class OrderServiceImpl implements OrderService {
@@ -63,6 +72,7 @@ public class OrderServiceImpl implements OrderService {
     private final CartItemMapper cartItemMapper;
     private final ProductSkuMapper productSkuMapper;
     private final ProductMapper productMapper;
+    private final InventoryService inventoryService;
     private final StringRedisTemplate stringRedisTemplate;
 
     public OrderServiceImpl(OrderMapper orderMapper,
@@ -71,6 +81,7 @@ public class OrderServiceImpl implements OrderService {
                             CartItemMapper cartItemMapper,
                             ProductSkuMapper productSkuMapper,
                             ProductMapper productMapper,
+                            InventoryService inventoryService,
                             StringRedisTemplate stringRedisTemplate) {
         this.orderMapper = orderMapper;
         this.orderItemMapper = orderItemMapper;
@@ -78,6 +89,7 @@ public class OrderServiceImpl implements OrderService {
         this.cartItemMapper = cartItemMapper;
         this.productSkuMapper = productSkuMapper;
         this.productMapper = productMapper;
+        this.inventoryService = inventoryService;
         this.stringRedisTemplate = stringRedisTemplate;
     }
 
@@ -102,15 +114,16 @@ public class OrderServiceImpl implements OrderService {
         Map<Long, ProductSku> skuMap = loadSkus(checkedItems);
         Map<Long, Product> productMap = loadProducts(skuMap.values());
 
+        // 订单号提前生成：库存锁定要以它作为业务单号落流水（原实现是建订单时才生成）
+        String orderNo = generateOrderNo(userId);
+
         List<OrderItem> orderItems = new ArrayList<>();
         BigDecimal totalAmount = BigDecimal.ZERO;
         for (CartItem cartItem : checkedItems) {
             ProductSku sku = requireOnSaleSku(cartItem.getSkuId(), skuMap, productMap);
             int quantity = cartItem.getQuantity();
-            // 条件扣减：库存不足影响 0 行 → 抛异常，整个事务回滚（已扣库存一并回滚）
-            if (productSkuMapper.deductStock(sku.getId(), quantity) == 0) {
-                throw new BusinessException(ResultCode.ORDER_STOCK_INSUFFICIENT);
-            }
+            // 条件锁定：可售量不足时影响 0 行 → 抛异常，整个事务回滚（已锁定的库存一并回滚）
+            lockStock(sku.getId(), quantity, orderNo);
             productMapper.increaseSales(sku.getProductId(), quantity);
 
             BigDecimal subtotal = sku.getPrice().multiply(BigDecimal.valueOf(quantity));
@@ -119,7 +132,7 @@ public class OrderServiceImpl implements OrderService {
         }
 
         Order order = new Order();
-        order.setOrderNo(generateOrderNo(userId));
+        order.setOrderNo(orderNo);
         order.setUserId(userId);
         order.setTotalAmount(totalAmount);
         // 暂无优惠券/运费，实付与应付相等（YAGNI）
@@ -193,31 +206,50 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void pay(Long userId, String orderNo) {
         Order order = requireOrder(userId, orderNo, OrderStatus.PENDING_PAYMENT);
-        order.setStatus(OrderStatus.PENDING_SHIPMENT.getCode());
-        order.setPayTime(LocalDateTime.now());
-        orderMapper.updateById(order);
+        // 走条件更新而不是 updateById：并发重复支付时只有一方能把状态从「待付款」推进，
+        // 后到方影响 0 行直接抛 4006。否则会重复触发一次出库，把在库量扣两次
+        if (orderMapper.markPaid(orderNo, OrderStatus.PENDING_PAYMENT.getCode(),
+                OrderStatus.PENDING_SHIPMENT.getCode(), LocalDateTime.now()) == 0) {
+            throw new BusinessException(ResultCode.ORDER_STATUS_ILLEGAL);
+        }
+        outboundStock(order);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean markPaid(String orderNo) {
+        Order order = orderMapper.selectOne(new LambdaQueryWrapper<Order>()
+                .eq(Order::getOrderNo, orderNo));
+        if (order == null) {
+            return false;
+        }
         // 条件更新（status=1 才生效）与超时取消任务天然互斥，影响 0 行即并发落败
-        return orderMapper.markPaid(orderNo, OrderStatus.PENDING_PAYMENT.getCode(),
-                OrderStatus.PENDING_SHIPMENT.getCode(), LocalDateTime.now()) > 0;
+        if (orderMapper.markPaid(orderNo, OrderStatus.PENDING_PAYMENT.getCode(),
+                OrderStatus.PENDING_SHIPMENT.getCode(), LocalDateTime.now()) == 0) {
+            return false;
+        }
+        outboundStock(order);
+        return true;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void cancel(Long userId, String orderNo) {
         Order order = requireOrder(userId, orderNo, OrderStatus.PENDING_PAYMENT);
+        // 与超时取消任务共用同一个条件更新：并发下只有一方能推进状态，
+        // 避免用户点取消的同时超时任务也在取消，导致锁定被释放两次
+        if (orderMapper.cancelIfPendingPayment(order.getId(),
+                OrderStatus.PENDING_PAYMENT.getCode(), OrderStatus.CANCELLED.getCode(),
+                LocalDateTime.now()) == 0) {
+            throw new BusinessException(ResultCode.ORDER_STATUS_ILLEGAL);
+        }
         List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>()
                 .eq(OrderItem::getOrderId, order.getId()));
-        // 取消即回滚库存与销量，与订单状态变更同一事务
-        rollbackStockAndSales(items);
-        order.setStatus(OrderStatus.CANCELLED.getCode());
-        order.setCancelTime(LocalDateTime.now());
-        orderMapper.updateById(order);
+        // 取消即释放锁定与回滚销量，与订单状态变更同一事务
+        rollbackStockAndSales(orderNo, items);
         // 取消后主动失效涉及商品的详情缓存
         evictProductDetailCache(items);
     }
@@ -226,16 +258,16 @@ public class OrderServiceImpl implements OrderService {
     @Transactional(rollbackFor = Exception.class)
     public void systemCancel(Order order) {
         // 条件更新保证并发安全：仅当订单仍为待付款时置为已取消；
-        // 影响 0 行说明订单已被用户取消或已支付，静默返回（不抛错、不回滚库存）
+        // 影响 0 行说明订单已被用户取消或已支付，静默返回（不抛错、不释放库存）
         int updated = orderMapper.cancelIfPendingPayment(order.getId(),
                 OrderStatus.PENDING_PAYMENT.getCode(), OrderStatus.CANCELLED.getCode(), LocalDateTime.now());
         if (updated == 0) {
             return;
         }
-        // 条件更新生效后才回滚库存与销量，与状态变更同一事务，任一步失败整体回滚
+        // 条件更新生效后才释放锁定与回滚销量，与状态变更同一事务，任一步失败整体回滚
         List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>()
                 .eq(OrderItem::getOrderId, order.getId()));
-        rollbackStockAndSales(items);
+        rollbackStockAndSales(order.getOrderNo(), items);
         // 取消后主动失效涉及商品的详情缓存
         evictProductDetailCache(items);
     }
@@ -311,11 +343,48 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * 回滚订单库存与销量：按明细逐条恢复 SKU 库存、扣减商品销量（用户取消与系统取消共用）
+     * 锁定库存，并把库存域错误码统一映射为订单域错误码
+     *
+     * <p>库存域有自己的码段（2030 记录不存在 / 2031 不足），但下单接口对外的契约一直是
+     * 4004「商品库存不足」。这里映射一次以保持前端契约不变；
+     * 「库存行不存在」也归到 4004 —— 对买家而言都表现为「买不了」，
+     * 数据缺陷由后台库存页（会显示「库存记录不存在」）暴露，不向前台泄漏内部状态。
      */
-    private void rollbackStockAndSales(List<OrderItem> items) {
+    private void lockStock(Long skuId, int quantity, String orderNo) {
+        try {
+            inventoryService.lock(skuId, quantity, orderNo);
+        } catch (BusinessException e) {
+            if (ResultCode.PRODUCT_INVENTORY_INSUFFICIENT.getCode().equals(e.getCode())
+                    || ResultCode.PRODUCT_INVENTORY_NOT_FOUND.getCode().equals(e.getCode())) {
+                throw new BusinessException(ResultCode.ORDER_STOCK_INSUFFICIENT);
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 支付成功后出库：把订单明细的锁定量转为已售（在库量与锁定量同时扣减）
+     *
+     * <p>必须在「状态推进成功」之后、同一事务内调用，因此出库失败会连状态变更一起回滚，
+     * 不存在「已支付但库存没出」的中间态。
+     */
+    private void outboundStock(Order order) {
+        List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>()
+                .eq(OrderItem::getOrderId, order.getId()));
         for (OrderItem item : items) {
-            productSkuMapper.restoreStock(item.getSkuId(), item.getQuantity());
+            inventoryService.outbound(item.getSkuId(), item.getQuantity(), order.getOrderNo());
+        }
+    }
+
+    /**
+     * 回滚订单库存与销量：按明细逐条释放锁定、扣减商品销量（用户取消与系统取消共用）
+     *
+     * <p>释放是条件更新（{@code locked_stock >= quantity}），重复调用会因锁定量不足而抛异常，
+     * 因此不会出现「取消两次把可售量放多」的问题。
+     */
+    private void rollbackStockAndSales(String orderNo, List<OrderItem> items) {
+        for (OrderItem item : items) {
+            inventoryService.release(item.getSkuId(), item.getQuantity(), orderNo);
             productMapper.decreaseSales(item.getProductId(), item.getQuantity());
         }
     }
